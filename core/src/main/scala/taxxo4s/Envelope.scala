@@ -22,11 +22,11 @@ object Envelope {
 
   inline given derived[R <: Product](using m: Mirror.ProductOf[R]): Aux[R, DataOf[m.MirroredElemLabels, m.MirroredElemTypes]] =
     new Indexed[R, DataOf[m.MirroredElemLabels, m.MirroredElemTypes]](
-      dataIdx = indexOf[m.MirroredElemLabels, "Data"](0, required = false),
-      statusIdx = indexOf[m.MirroredElemLabels, "Status"](0, required = true),
-      messageIdx = indexOf[m.MirroredElemLabels, "Message"](0, required = true),
-      errorCodeIdx = indexOf[m.MirroredElemLabels, "ErrorCode"](0, required = true),
-      additionalDataIdx = indexOf[m.MirroredElemLabels, "AdditionalData"](0, required = true)
+      dataIdx = fieldIdx[R, "Data", Option[?]](required = false),
+      statusIdx = fieldIdx[R, "Status", Option[Int]](required = true),
+      messageIdx = fieldIdx[R, "Message", Option[String]](required = true),
+      errorCodeIdx = fieldIdx[R, "ErrorCode", Option[Int]](required = true),
+      additionalDataIdx = fieldIdx[R, "AdditionalData", Option[String]](required = true)
     )
 
   final class Indexed[R <: Product, D](dataIdx: Int, statusIdx: Int, messageIdx: Int, errorCodeIdx: Int, additionalDataIdx: Int)
@@ -44,11 +44,15 @@ object Envelope {
     private def field[A](r: R, idx: Int): Option[A] = r.productElement(idx).asInstanceOf[Option[A]]
   }
 
-  private inline def indexOf[Labels <: Tuple, L <: String](inline acc: Int, inline required: Boolean): Int =
-    inline erasedValue[Labels] match {
-      case _: (L *: _)    => acc
-      case _: (_ *: tail) => indexOf[tail, L](acc + 1, required)
-      case _: EmptyTuple =>
+  private inline def fieldIdx[R, L <: String, T](using m: Mirror.ProductOf[R])(inline required: Boolean): Int =
+    indexOf[m.MirroredElemLabels, m.MirroredElemTypes, L, T](0, required)
+
+  private inline def indexOf[Labels <: Tuple, Types <: Tuple, L <: String, T](inline acc: Int, inline required: Boolean): Int =
+    inline erasedValue[(Labels, Types)] match {
+      case _: (L *: _, T *: _)   => acc
+      case _: (L *: _, _ *: _)   => error("Not a Taxxo response envelope: field " + constValue[L] + " has an unexpected type")
+      case _: (_ *: ls, _ *: ts) => indexOf[ls, ts, L, T](acc + 1, required)
+      case _: (EmptyTuple, EmptyTuple) =>
         inline if (required) error("Not a Taxxo response envelope: missing field " + constValue[L]) else -1
     }
 }
