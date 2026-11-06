@@ -2,9 +2,11 @@ package taxxo4s
 
 import scala.collection.mutable.ListBuffer
 
-import sttp.client4.{GenericRequest, StringBody}
-import sttp.client4.testing.{ResponseStub, SyncBackendStub}
+import sttp.client4.{GenericRequest, SttpClientException, StringBody}
+import sttp.client4.testing.{BackendStub, ResponseStub}
 import sttp.model.{Method, StatusCode}
+import sttp.monad.{IdentityMonad, MonadError}
+import sttp.monad.syntax.*
 import taxxo4s.generated.{Documents, Personnel}
 import taxxo4s.generated.TaxxoEndpoints.*
 import taxxo4s.generated.enums.APIAbsenceRequestStatusEnum
@@ -21,22 +23,29 @@ class TaxxoClientSuite extends munit.FunSuite {
     """[{"AbsenceRequestId":7,"General":{"Flag":0,"AbsenceType":1,"RequestStatus":-1},
       |  "Periods":[{"DateFrom":"2026-11-02T00:00:00","DateTo":"2026-11-03T00:00:00"}]}]""".stripMargin
 
-  private class FakeTaxxo(handler: PartialFunction[(GenericRequest[?, ?], String), String]) {
+  private type Handler = PartialFunction[(GenericRequest[?, ?], String), String]
+
+  private class FakeTaxxo[F[_]](monad: MonadError[F], status: StatusCode)(handler: Handler) {
     val requests = ListBuffer.empty[GenericRequest[?, ?]]
     def authCalls: Int = requests.count(_.uri.path.last == "authenticate")
-    val backend = SyncBackendStub.whenRequestMatchesPartial { req =>
+    val backend = BackendStub(monad).whenRequestMatchesPartial { req =>
       requests += req
       if (req.uri.path.last == "authenticate") {
         ResponseStub.adjust(ok(s"\"token-$authCalls\""))
       } else {
         val token = req.header("Authorization").getOrElse("")
         handler.lift((req, token)) match {
-          case Some(body) => ResponseStub.adjust(body)
+          case Some(body) => ResponseStub.adjust(body, status)
           case None       => ResponseStub.adjust("", StatusCode.Unauthorized)
         }
       }
     }
     val client = TaxxoClient(config, backend)
+  }
+
+  private object FakeTaxxo {
+    def apply(handler: Handler, status: StatusCode = StatusCode.Ok) = new FakeTaxxo(IdentityMonad, status)(handler)
+    def lazily(handler: Handler) = new FakeTaxxo(Lazy.monad, StatusCode.Ok)(handler)
   }
 
   test("authenticate posts the API key as a JSON string and stores the session token") {
@@ -82,8 +91,40 @@ class TaxxoClientSuite extends munit.FunSuite {
   test("HTTP 401 triggers re-authentication, but a second rejection is returned, not retried forever") {
     val fake = FakeTaxxo(PartialFunction.empty)
     val result = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1)
-    assertEquals(result, Left(TaxxoError.Http(401)))
+    assertEquals(result, Left(TaxxoError.Http(401, "")))
     assertEquals(fake.authCalls, 2)
+  }
+
+  test("HTTP error responses keep their body") {
+    val body = error(7, "DateFrom is required")
+    val fake = FakeTaxxo({ case _ => body }, StatusCode.BadRequest)
+    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1), Left(TaxxoError.Http(400, body)))
+  }
+
+  test("transport failures become TaxxoError.Transport instead of being thrown") {
+    val io = new java.io.IOException("connection reset")
+    val fake = FakeTaxxo { case (req, _) => throw new SttpClientException.ReadException(req, io) }
+    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).left.map(_.getCause.getCause), Left(io))
+  }
+
+  test("on a lazy backend, logout built before authenticate ran still logs out") {
+    val fake = FakeTaxxo.lazily { case (req, _) if req.uri.path.last == "logout" => """{"Status":0}""" }
+    val logout = fake.client.logout
+    assertEquals(fake.client.authenticate.flatMap(_ => logout).run(), Right(()))
+    assertEquals(fake.requests.map(_.uri.path.last).toList, List("authenticate", "logout"))
+  }
+
+  test("on a lazy backend, a reused call description authenticates once") {
+    val fake = FakeTaxxo.lazily { case _ => ok("""{"DocumentId":1}""") }
+    val fetch = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1)
+    fetch.run()
+    fetch.run()
+    assertEquals((fake.authCalls, fake.requests.size), (1, 3))
+  }
+
+  test("a response type without the envelope fields is rejected at compile time") {
+    assert(compileErrors("summon[Envelope[NoStatus]]").contains("missing field Status"))
+    assert(compileErrors("summon[Envelope[PlainData]]").contains("field Data has an unexpected type"))
   }
 
   test("status-only responses (APIResponse) yield Unit") {
@@ -110,3 +151,6 @@ class TaxxoClientSuite extends munit.FunSuite {
     assertEquals(fake.requests.count(_.uri.path.last == "logout"), 1)
   }
 }
+
+final case class NoStatus(Data: Option[Int], Message: Option[String], ErrorCode: Option[Int], AdditionalData: Option[String])
+final case class PlainData(Data: Int, Status: Option[Int], Message: Option[String], ErrorCode: Option[Int], AdditionalData: Option[String])

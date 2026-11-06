@@ -2,11 +2,11 @@ package taxxo4s
 
 import java.util.concurrent.atomic.AtomicReference
 
-import sttp.client4.Backend
+import sttp.client4.{Backend, SttpClientException}
 import sttp.model.{HeaderNames, StatusCode}
 import sttp.monad.MonadError
 import sttp.monad.syntax.*
-import sttp.tapir.{DecodeResult, PublicEndpoint}
+import sttp.tapir.{stringBody, DecodeResult, PublicEndpoint}
 import sttp.tapir.client.sttp4.SttpClientInterpreter
 import taxxo4s.generated.General
 
@@ -21,7 +21,6 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
   def callOpt[I, R](e: PublicEndpoint[I, Unit, R, Any])(input: I)(using env: Envelope[R]): F[Either[TaxxoError, Option[env.Data]]] =
     send(e)(input).map(_.flatMap(r => checkStatus(r).map(env.data)))
 
-  /** Returns the full response envelope; unlike `call`, `Status = Error` is not turned into a `Left` (useful for warnings or batch responses). */
   def send[I, R](e: PublicEndpoint[I, Unit, R, Any])(input: I)(using Envelope[R]): F[Either[TaxxoError, R]] =
     currentToken.flatMapRight { token =>
       sendWithToken(e, input, Some(token)).flatMap { result =>
@@ -38,13 +37,15 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
     }
 
   def logout: F[Either[TaxxoError, Unit]] =
-    session.getAndSet(None) match {
-      case None        => monad.unit(Right(()))
-      case Some(token) => sendWithToken(General.ApiPublicLogoutGet, (), Some(token)).map(_.flatMap(checkStatus).map(_ => ()))
+    monad.suspend {
+      session.getAndSet(None) match {
+        case None        => monad.unit(Right(()))
+        case Some(token) => sendWithToken(General.ApiPublicLogoutGet, (), Some(token)).map(_.flatMap(checkStatus).map(_ => ()))
+      }
     }
 
   private def currentToken: F[Either[TaxxoError, String]] =
-    session.get.fold(authenticate)(t => monad.unit(Right(t)))
+    monad.suspend(session.get.fold(authenticate)(t => monad.unit(Right(t))))
 
   private def refreshToken(rejected: String): F[Either[TaxxoError, String]] =
     session.get match {
@@ -53,14 +54,14 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
     }
 
   private def sendWithToken[I, R](e: PublicEndpoint[I, Unit, R, Any], input: I, token: Option[String]): F[Either[TaxxoError, R]] = {
-    val request = interpreter.toRequest(e, Some(config.baseUri)).apply(input)
+    val request = interpreter.toRequest(e.errorOut(stringBody), Some(config.baseUri)).apply(input)
     token.fold(request)(request.header(HeaderNames.Authorization, _)).send(backend).map { response =>
       response.body match {
-        case DecodeResult.Value(Right(r))                         => Right(r)
-        case f: DecodeResult.Failure if response.code.isSuccess => Left(TaxxoError.Decode(f.toString))
-        case _                                                    => Left(TaxxoError.Http(response.code.code))
+        case DecodeResult.Value(Right(r))   => Right(r)
+        case DecodeResult.Value(Left(body)) => Left(TaxxoError.Http(response.code.code, body))
+        case f: DecodeResult.Failure        => Left(TaxxoError.Decode(f.toString))
       }
-    }
+    }.handleError { case e: SttpClientException => monad.unit(Left(TaxxoError.Transport(e))) }
   }
 
   private def checkStatus[R](r: R)(using env: Envelope[R]): Either[TaxxoError, R] =
@@ -68,7 +69,7 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
 
   private def tokenRejected[R](result: Either[TaxxoError, R])(using Envelope[R]): Boolean =
     result.flatMap(checkStatus) match {
-      case Left(TaxxoError.Http(code))           => code == StatusCode.Unauthorized.code
+      case Left(TaxxoError.Http(code, _))        => code == StatusCode.Unauthorized.code
       case Left(TaxxoError.Api(errorCode, _, _)) => errorCode.contains(TokenExpiredOrInvalid)
       case _                                     => false
     }

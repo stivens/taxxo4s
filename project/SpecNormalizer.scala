@@ -22,9 +22,10 @@ object SpecNormalizer {
       .mapValues(_.mapObject(_.filter { case (_, op) => !unsupported(op) }.mapValues(normalizeOperation)))
       .filter { case (_, item) => item.asObject.exists(_.nonEmpty) }
 
-    val unwrapped = rewriteObjects(spec.mapObject(_.add("paths", Json.fromJsonObject(kept)).remove("tags")))(unwrapSingleAllOf)
-    val relaxed = unwrapped.mapObject(update(_, "components")(_.mapObject(update(_, "schemas")(rewriteObjects(_)(relaxDateTime)))))
-    Normalized(relaxed, dropped)
+    val trimmed = spec.mapObject(_.add("paths", Json.fromJsonObject(kept)).remove("tags"))
+    // Unwrap last: it discards the wrapper's `nullable`, which relaxNullableRequired still needs.
+    val relaxed = rewriteSchemas(trimmed)(relaxDateTime.andThen(relaxNullableRequired))
+    Normalized(rewriteObjects(relaxed)(unwrapSingleAllOf), dropped)
   }
 
   // A list of objects in a query string has no portable encoding; the server expects ASP.NET's `p[0].Field=` binding.
@@ -57,6 +58,9 @@ object SpecNormalizer {
   private def sanitizeTag(tag: String): String =
     tag.split(" - ").head.split("[^A-Za-z0-9]+").filter(_.nonEmpty).map(_.capitalize).mkString
 
+  private def rewriteSchemas(spec: Json)(f: JsonObject => JsonObject): Json =
+    spec.mapObject(update(_, "components")(_.mapObject(update(_, "schemas")(rewriteObjects(_)(f)))))
+
   private def rewriteObjects(json: Json)(f: JsonObject => JsonObject): Json =
     json.arrayOrObject(
       json,
@@ -73,4 +77,9 @@ object SpecNormalizer {
   // Only models are relaxed: query parameters are sent by us, and an Instant with `Z` is accepted by the server.
   private def relaxDateTime(obj: JsonObject): JsonObject =
     if (obj("format").contains(Json.fromString("date-time"))) obj.remove("format") else obj
+
+  private def relaxNullableRequired(schema: JsonObject): JsonObject = {
+    def nullable(name: String) = schema("properties").exists(_.hcursor.downField(name).get[Boolean]("nullable").contains(true))
+    update(schema, "required")(_.mapArray(_.filterNot(_.asString.exists(nullable))))
+  }
 }
