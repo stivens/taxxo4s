@@ -14,10 +14,15 @@ object EnumConstantsGenerator {
     s"package $pkg.enums\n\nimport $pkg.$modelsObject\n\n${enums.mkString("\n")}"
   }
 
+  private val generatedMembers = Set("values", "names")
+
   private def renderEnum(name: String, modelsObject: String, members: List[(String, Long)]): String = {
-    val vals = members.map { case (n, v) => s"  final val ${ident(n)}: $modelsObject.$name = $v" }
+    members.map(_._1).find(generatedMembers).foreach { n =>
+      sys.error(s"Enum $name has a member named `$n`, which clashes with the generated `$n`")
+    }
+    val vals = members.map { case (n, v) => s"  final val ${ident(n)}: $modelsObject.$name = ${literal(v)}" }
     val all = members.map { case (n, _) => ident(n) }.mkString(", ")
-    val names = members.map { case (n, v) => s"$v -> ${Json.fromString(n).noSpaces}" }.mkString(", ")
+    val names = members.map { case (n, _) => s"${ident(n)} -> ${Json.fromString(n).noSpaces}" }.mkString(", ")
     s"""object $name {
        |${vals.mkString("\n")}
        |  val values: List[$modelsObject.$name] = List($all)
@@ -25,6 +30,8 @@ object EnumConstantsGenerator {
        |}
        |""".stripMargin
   }
+
+  private def literal(v: Long): String = if (v.isValidInt) v.toString else s"${v}L"
 
   // Scala keywords are all lowercase, so a capitalized plain identifier can never clash with one.
   private def ident(n: String): String =

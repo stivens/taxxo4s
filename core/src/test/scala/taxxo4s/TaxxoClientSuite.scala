@@ -1,5 +1,7 @@
 package taxxo4s
 
+import java.time.LocalDate
+
 import scala.collection.mutable.ListBuffer
 
 import sttp.client4.{GenericRequest, SttpClientException, StringBody}
@@ -7,6 +9,7 @@ import sttp.client4.testing.{BackendStub, ResponseStub}
 import sttp.model.{Method, StatusCode}
 import sttp.monad.{IdentityMonad, MonadError}
 import sttp.monad.syntax.*
+import sttp.tapir.DecodeResult
 import taxxo4s.generated.{Documents, Personnel}
 import taxxo4s.generated.TaxxoEndpoints.*
 import taxxo4s.generated.enums.APIAbsenceRequestStatusEnum
@@ -28,6 +31,7 @@ class TaxxoClientSuite extends munit.FunSuite {
   private class FakeTaxxo[F[_]](monad: MonadError[F], status: StatusCode)(handler: Handler) {
     val requests = ListBuffer.empty[GenericRequest[?, ?]]
     def authCalls: Int = requests.count(_.uri.path.last == "authenticate")
+    def logoutCalls: Int = requests.count(_.uri.path.last == "logout")
     val backend = BackendStub(monad).whenRequestMatchesPartial { req =>
       requests += req
       if (req.uri.path.last == "authenticate") {
@@ -86,6 +90,7 @@ class TaxxoClientSuite extends munit.FunSuite {
     val result = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1)
     assertEquals(result.map(_.DocumentId), Right(Some(1)))
     assertEquals(fake.authCalls, 2)
+    assertEquals(fake.logoutCalls, 0, "the rejected token must not be logged out")
   }
 
   test("HTTP 401 triggers re-authentication, but a second rejection is returned, not retried forever") {
@@ -99,6 +104,13 @@ class TaxxoClientSuite extends munit.FunSuite {
     val body = error(7, "DateFrom is required")
     val fake = FakeTaxxo({ case _ => body }, StatusCode.BadRequest)
     assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1), Left(TaxxoError.Http(400, body)))
+  }
+
+  test("HTTP error messages include only an excerpt of a large body") {
+    val body = "x" * 10000
+    val fake = FakeTaxxo({ case _ => body }, StatusCode.InternalServerError)
+    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).left.map(_.getMessage),
+      Left(s"Taxxo API returned HTTP 500: ${"x" * 500}… (9500 more characters)"))
   }
 
   test("transport failures become TaxxoError.Transport instead of being thrown") {
@@ -138,9 +150,35 @@ class TaxxoClientSuite extends munit.FunSuite {
     assertEquals(fake.client.callOpt(Documents.ApiPublicDocumentByDocumentIdGet)(1), Right(None))
   }
 
-  test("malformed JSON becomes TaxxoError.Decode") {
-    val fake = FakeTaxxo { case _ => """{"Data": {"DocumentId": "not-a-number"}}""" }
-    assert(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).left.exists(_.isInstanceOf[TaxxoError.Decode]))
+  test("malformed JSON becomes TaxxoError.Decode, keeping the parser error as the cause but not the body") {
+    val sensitive = "PESEL-12345"
+    val fake = FakeTaxxo { case _ => s"""{"Data": {"DocumentId": "not-a-number"}, "Message": "$sensitive"}""" }
+    fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1) match {
+      case Left(error: TaxxoError.Decode) =>
+        assert(error.getCause.isInstanceOf[DecodeResult.Error.JsonDecodeException], error.getCause)
+        assert(!error.getMessage.contains(sensitive), error.getMessage)
+        assert(error.getMessage.contains("ApiPublicDocumentByDocumentIdGet"), error.getMessage)
+      case other => fail(s"expected a decode error, got $other")
+    }
+  }
+
+  test("authenticating again logs out the session it replaces, and succeeds even if that logout fails") {
+    val fake = FakeTaxxo(PartialFunction.empty)
+    assertEquals(fake.client.authenticate, Right("token-1"))
+    assertEquals(fake.client.authenticate, Right("token-2"))
+    assertEquals(fake.requests.map(r => (r.uri.path.last, r.header("Authorization"))).toList,
+      List(("authenticate", None), ("authenticate", None), ("logout", Some("token-1"))))
+  }
+
+  test("date-only query parameters are sent as yyyy-MM-dd") {
+    val fake = FakeTaxxo { case (req, _) if req.uri.path.last == "calendars" => ok("[]") }
+    val result = fake.client.call(Personnel.ApiPublicCalendarsGet)((Some(LocalDate.of(2026, 11, 2)), None))
+    assertEquals(result, Right(Nil))
+    assertEquals(fake.requests.last.uri.params.get("dateFrom"), Some("2026-11-02"))
+  }
+
+  test("the config's toString does not reveal the API key") {
+    assert(!config.toString.contains("secret-key"), config.toString)
   }
 
   test("logout calls the API with the session token and clears it") {
@@ -148,7 +186,7 @@ class TaxxoClientSuite extends munit.FunSuite {
     fake.client.authenticate
     assertEquals(fake.client.logout, Right(()))
     assertEquals(fake.client.logout, Right(()))
-    assertEquals(fake.requests.count(_.uri.path.last == "logout"), 1)
+    assertEquals(fake.logoutCalls, 1)
   }
 }
 

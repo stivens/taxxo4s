@@ -25,13 +25,13 @@ With the sync backend every call returns an `Either`, so calls compose in a `for
 
 Each API tag maps to one object in `taxxo4s.generated` (`Documents`, `Invoices`, `Personnel`, …), and each endpoint is named after its `operationId`. Models live in `taxxo4s.generated.TaxxoEndpoints`.
 
-- **`call`** returns the response's `Data`. A `Status = Error` response becomes `TaxxoError.Api`, and a missing `Data` becomes `TaxxoError.MissingData`.
+- **`call`** returns the response's `Data`. A `Status = Error` response becomes `TaxxoError.Api`, and a missing `Data` becomes `TaxxoError.MissingData`. A `Status = Warning` response counts as success, and its `Message` is dropped; use `send` if you need it.
 - **`callOpt`** is like `call`, but returns `Option` for endpoints that may legitimately return no data.
 - **`send`** returns the whole response envelope (`Status`, `Message`, `ErrorCode`, …); `Status = Error` is not turned into a `Left`, but the token-rejection retry below still applies.
 
-Non-2xx responses become `TaxxoError.Http`, which keeps the response body. Connection and timeout failures (`SttpClientException`) become `TaxxoError.Transport`. Any other exception propagates in the backend's error channel.
+Non-2xx responses become `TaxxoError.Http`, which keeps the response body in `body`. Error messages include at most the first 500 characters of a body, so logging an error does not dump a whole response. A response that can't be decoded becomes `TaxxoError.Decode`, with the parser's exception as its cause. Connection and timeout failures (`SttpClientException`) become `TaxxoError.Transport`. Any other exception propagates in the backend's error channel.
 
-The client authenticates on first use and caches the session token. If the token is rejected (HTTP 401, or `ErrorCode = 10`), it re-authenticates once and retries the call. Authentication is not serialized across fibers, so concurrent first calls on a fresh client may each authenticate once.
+The client authenticates on first use and caches the session token. If the token is rejected (HTTP 401, or `ErrorCode = 10`), it re-authenticates once and retries the call. Calling `authenticate` yourself starts a new session and logs out the one it replaces. Authentication is not serialized across fibers, so concurrent first calls on a fresh client may each authenticate once. `logout` ends the current session, but the client stays usable: the next call authenticates again.
 
 ## Differences from the raw spec
 
@@ -41,7 +41,8 @@ The client authenticates on first use and caches the session token. If the token
 - **`allOf: [$ref]` wrappers** are replaced by a plain `$ref`.
 - **`nullable` properties are never `required`,** so they are always generated as `Option`.
 - **Content types:** only `application/json` request and response bodies are kept.
-- **`date-time` fields in models are `String`.** The server emits ASP.NET timestamps, which may have no offset, and `java.time.Instant` would reject those. Query parameters stay `java.time.Instant`.
+- **`date-time` fields in models are `String`.** The server emits ASP.NET timestamps, which may have no offset, and `java.time.Instant` would reject those.
+- **Date-only parameters are `java.time.LocalDate`.** These are `date-time` parameters whose description says `yyyy-MM-dd`, currently `dateFrom` and `dateTo` of `Personnel.ApiPublicCalendarsGet`. They are sent as `2026-11-02`. Other `date-time` query parameters stay `java.time.Instant` and are sent in UTC (`2026-11-02T10:00:00Z`). The spec doesn't say how the server maps that to its local time, so near midnight the server may read a different date than the UTC one.
 - **Unsupported operations are skipped,** with a warning at build time. These are operations taking a list of objects as a query parameter, currently only `ApiPublicAccountingDataBatchAccountValueByMonthGet`.
 
 Integer enums are generated as `Int` aliases, because tapir only supports string enums. Their named values are generated separately into `taxxo4s.generated.enums` (e.g. `APIResponseStatusType.OK`).

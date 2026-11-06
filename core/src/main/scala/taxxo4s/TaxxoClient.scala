@@ -29,28 +29,35 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
       }
     }
 
+  /** Starts a new session. A session this client already held is logged out; failing to do so does not fail this call. */
   def authenticate: F[Either[TaxxoError, String]] =
-    sendWithToken(General.ApiPublicAuthenticatePost, (config.culture, Some(config.apiKey)), token = None).map { result =>
-      val token = result.flatMap(checkStatus).flatMap(r => r.Data.filter(_.nonEmpty).toRight(TaxxoError.MissingData))
-      token.foreach(t => session.set(Some(t)))
-      token
+    login.flatMapRight {
+      case (token, Some(replaced)) if replaced != token => endSession(replaced).map(_ => Right(token))
+      case (token, _)                                    => monad.unit(Right(token))
     }
 
   def logout: F[Either[TaxxoError, Unit]] =
-    monad.suspend {
-      session.getAndSet(None) match {
-        case None        => monad.unit(Right(()))
-        case Some(token) => sendWithToken(General.ApiPublicLogoutGet, (), Some(token)).map(_.flatMap(checkStatus).map(_ => ()))
-      }
+    monad.suspend(session.getAndSet(None).fold(monad.unit(Right(())))(endSession))
+
+  private def login: F[Either[TaxxoError, (String, Option[String])]] =
+    sendWithToken(General.ApiPublicAuthenticatePost, (config.culture, Some(config.apiKey)), token = None).map { result =>
+      val token = result.flatMap(checkStatus).flatMap(r => r.Data.filter(_.nonEmpty).toRight(TaxxoError.MissingData))
+      token.map(t => (t, session.getAndSet(Some(t))))
     }
 
-  private def currentToken: F[Either[TaxxoError, String]] =
-    monad.suspend(session.get.fold(authenticate)(t => monad.unit(Right(t))))
+  private def newToken: F[Either[TaxxoError, String]] = login.map(_.map(_._1))
 
+  private def endSession(token: String): F[Either[TaxxoError, Unit]] =
+    sendWithToken(General.ApiPublicLogoutGet, (), Some(token)).map(_.flatMap(checkStatus).map(_ => ()))
+
+  private def currentToken: F[Either[TaxxoError, String]] =
+    monad.suspend(session.get.fold(newToken)(t => monad.unit(Right(t))))
+
+  // The rejected token is dead server-side, so replacing it must not log it out the way authenticate does.
   private def refreshToken(rejected: String): F[Either[TaxxoError, String]] =
     session.get match {
       case Some(t) if t != rejected => monad.unit(Right(t))
-      case _                        => authenticate
+      case _                        => newToken
     }
 
   private def sendWithToken[I, R](e: PublicEndpoint[I, Unit, R, Any], input: I, token: Option[String]): F[Either[TaxxoError, R]] = {
@@ -59,7 +66,11 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
       response.body match {
         case DecodeResult.Value(Right(r))   => Right(r)
         case DecodeResult.Value(Left(body)) => Left(TaxxoError.Http(response.code.code, body))
-        case f: DecodeResult.Failure        => Left(TaxxoError.Decode(f.toString))
+        case DecodeResult.Error(_, failure) =>
+          // tapir's sttp interpreter wraps the parser error in an exception whose message is the whole body.
+          val parserError = Option(failure.getCause).getOrElse(failure)
+          Left(TaxxoError.Decode(s"${e.showShort}: ${parserError.getMessage}", Some(parserError)))
+        case f: DecodeResult.Failure        => Left(TaxxoError.Decode(s"${e.showShort}: $f", None))
       }
     }.handleError { case e: SttpClientException => monad.unit(Left(TaxxoError.Transport(e))) }
   }

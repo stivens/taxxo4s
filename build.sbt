@@ -39,7 +39,11 @@ lazy val core = project
     openapiDisableValidatorGeneration := true,
     Compile / sourceGenerators += generateEnumConstants.taskValue,
     fetchSpec := Def.uncached {
-      sbt.io.Using.urlInputStream(url("https://platforma2.taxxo.pl/swagger/v1/swagger.json").toURL)(IO.transfer(_, rawSpec.value))
+      IO.writeFileAtomically(rawSpec.value) { staging =>
+        sbt.io.Using.urlInputStream(uri("https://platforma2.taxxo.pl/swagger/v1/swagger.json").toURL)(IO.transfer(_, staging))
+        // Throws on a truncated or non-JSON download, so it never replaces the vendored spec.
+        SpecNormalizer.load(staging.toPath)
+      }
       streams.value.log.info(s"Saved ${rawSpec.value}")
     },
     libraryDependencies ++= Seq(

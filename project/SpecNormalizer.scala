@@ -32,10 +32,10 @@ object SpecNormalizer {
   private def hasObjectQueryParam(op: Json, definitions: JsonObject): Boolean = {
     def isObject(schema: ACursor): Boolean =
       (schema.get[String]("$ref").toOption, schema.get[String]("type").toOption) match {
-        case (Some(ref), _)      => definitions(ref.stripPrefix("#/components/schemas/")).exists(_.hcursor.get[String]("type").contains("object"))
+        case (Some(ref), _)      => definitions(ref.stripPrefix("#/components/schemas/")).exists(d => isObject(d.hcursor))
         case (_, Some("object")) => true
         case (_, Some("array"))  => isObject(schema.downField("items"))
-        case _                   => false
+        case _                   => schema.downField("allOf").values.exists(_.exists(s => isObject(s.hcursor)))
       }
     op.hcursor.downField("parameters").values.getOrElse(Nil).exists { p =>
       p.hcursor.get[String]("in").contains("query") && isObject(p.hcursor.downField("schema"))
@@ -45,9 +45,17 @@ object SpecNormalizer {
   private def normalizeOperation(op: Json): Json =
     op.mapObject { o =>
       val withTags = update(o, "tags")(_.mapArray(_.map(_.mapString(sanitizeTag))))
-      val withBody = update(withTags, "requestBody")(onlyJsonContent)
+      val withParams = update(withTags, "parameters")(_.mapArray(_.map(_.mapObject(dateOnlyParam))))
+      val withBody = update(withParams, "requestBody")(onlyJsonContent)
       update(withBody, "responses")(_.mapObject(_.mapValues(onlyJsonContent)))
     }
+
+  // An Instant's UTC date can differ from the date the server reads.
+  private def dateOnlyParam(param: JsonObject): JsonObject = {
+    val dateOnly = param("description").flatMap(_.asString).exists(_.contains("yyyy-MM-dd")) &&
+      param("schema").flatMap(_.asObject).exists(isDateTime)
+    if (dateOnly) update(param, "schema")(_.mapObject(_.add("format", Json.fromString("date")))) else param
+  }
 
   private def onlyJsonContent(body: Json): Json =
     body.mapObject(update(_, "content")(_.mapObject(_.filterKeys(_ == "application/json"))))
@@ -74,9 +82,11 @@ object SpecNormalizer {
       .getOrElse(obj)
 
   // ASP.NET serializes unspecified-kind DateTime without an offset, which java.time.Instant refuses to parse.
-  // Only models are relaxed: query parameters are sent by us, and an Instant with `Z` is accepted by the server.
+  // Only models are relaxed: query parameters are sent by us, and Instant always carries an explicit offset.
   private def relaxDateTime(obj: JsonObject): JsonObject =
-    if (obj("format").contains(Json.fromString("date-time"))) obj.remove("format") else obj
+    if (isDateTime(obj)) obj.remove("format") else obj
+
+  private def isDateTime(schema: JsonObject): Boolean = schema("format").contains(Json.fromString("date-time"))
 
   private def relaxNullableRequired(schema: JsonObject): JsonObject = {
     def nullable(name: String) = schema("properties").exists(_.hcursor.downField(name).get[Boolean]("nullable").contains(true))
