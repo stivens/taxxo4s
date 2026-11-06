@@ -24,41 +24,35 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
   def send[I, R](e: PublicEndpoint[I, Unit, R, Any])(input: I)(using Envelope[R]): F[Either[TaxxoError, R]] =
     currentToken.flatMapRight { token =>
       sendWithToken(e, input, Some(token)).flatMap { result =>
-        if (tokenRejected(result)) refreshToken(token).flatMapRight(newToken => sendWithToken(e, input, Some(newToken)))
-        else monad.unit(result)
+        if (tokenRejected(result)) {
+          session.updateAndGet(_.filterNot(_ == token))
+          currentToken.flatMapRight(fresh => sendWithToken(e, input, Some(fresh)))
+        } else monad.unit(result)
       }
     }
 
   /** Starts a new session. A session this client already held is logged out; failing to do so does not fail this call. */
   def authenticate: F[Either[TaxxoError, String]] =
-    login.flatMapRight {
-      case (token, Some(replaced)) if replaced != token => endSession(replaced).map(_ => Right(token))
-      case (token, _)                                    => monad.unit(Right(token))
-    }
+    sendWithToken(General.ApiPublicAuthenticatePost, (config.culture, Some(config.apiKey)), token = None)
+      .map(_.flatMap(checkStatus).flatMap(_.Data.filter(_.nonEmpty).toRight(TaxxoError.MissingData)))
+      .flatMapRight { token =>
+        session.getAndSet(Some(token)) match {
+          case Some(replaced) if replaced != token => endSession(replaced).map(_ => Right(token))
+          case _                                   => monad.unit(Right(token))
+        }
+      }
 
   def logout: F[Either[TaxxoError, Unit]] =
     monad.suspend(session.getAndSet(None).fold(monad.unit(Right(())))(endSession))
 
-  private def login: F[Either[TaxxoError, (String, Option[String])]] =
-    sendWithToken(General.ApiPublicAuthenticatePost, (config.culture, Some(config.apiKey)), token = None).map { result =>
-      val token = result.flatMap(checkStatus).flatMap(r => r.Data.filter(_.nonEmpty).toRight(TaxxoError.MissingData))
-      token.map(t => (t, session.getAndSet(Some(t))))
-    }
-
-  private def newToken: F[Either[TaxxoError, String]] = login.map(_.map(_._1))
-
+  // A token the server already rejects is as logged out as it gets.
   private def endSession(token: String): F[Either[TaxxoError, Unit]] =
-    sendWithToken(General.ApiPublicLogoutGet, (), Some(token)).map(_.flatMap(checkStatus).map(_ => ()))
+    sendWithToken(General.ApiPublicLogoutGet, (), Some(token)).map { result =>
+      if (tokenRejected(result)) Right(()) else result.flatMap(checkStatus).map(_ => ())
+    }
 
   private def currentToken: F[Either[TaxxoError, String]] =
-    monad.suspend(session.get.fold(newToken)(t => monad.unit(Right(t))))
-
-  // The rejected token is dead server-side, so replacing it must not log it out the way authenticate does.
-  private def refreshToken(rejected: String): F[Either[TaxxoError, String]] =
-    session.get match {
-      case Some(t) if t != rejected => monad.unit(Right(t))
-      case _                        => newToken
-    }
+    monad.suspend(session.get.fold(authenticate)(t => monad.unit(Right(t))))
 
   private def sendWithToken[I, R](e: PublicEndpoint[I, Unit, R, Any], input: I, token: Option[String]): F[Either[TaxxoError, R]] = {
     val request = interpreter.toRequest(e.errorOut(stringBody), Some(config.baseUri)).apply(input)

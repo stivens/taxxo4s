@@ -31,7 +31,7 @@ Each API tag maps to one object in `taxxo4s.generated` (`Documents`, `Invoices`,
 
 Non-2xx responses become `TaxxoError.Http`, which keeps the response body in `body`. Error messages include at most the first 500 characters of a body, so logging an error does not dump a whole response. A response that can't be decoded becomes `TaxxoError.Decode`, with the parser's exception as its cause. Connection and timeout failures (`SttpClientException`) become `TaxxoError.Transport`. Any other exception propagates in the backend's error channel.
 
-The client authenticates on first use and caches the session token. If the token is rejected (HTTP 401, or `ErrorCode = 10`), it re-authenticates once and retries the call. Calling `authenticate` yourself starts a new session and logs out the one it replaces. Authentication is not serialized across fibers, so concurrent first calls on a fresh client may each authenticate once. `logout` ends the current session, but the client stays usable: the next call authenticates again.
+The client authenticates on first use and caches the session token. If the token is rejected (HTTP 401, or `ErrorCode = 10`), it re-authenticates once and retries the call. Calling `authenticate` yourself starts a new session and logs out the one it replaces. Authentication is not serialized across fibers, so concurrent first calls on a fresh client may each authenticate once; the client keeps one of those sessions and logs out the others. `logout` ends the current session, but the client stays usable: the next call authenticates again. Logging out a session the server has already expired succeeds.
 
 ## Differences from the raw spec
 
@@ -39,7 +39,7 @@ The client authenticates on first use and caches the session token. If the token
 
 - **Tag names** are converted to identifiers (e.g. `Tags and Allocations` becomes `TagsAndAllocations`).
 - **`allOf: [$ref]` wrappers** are replaced by a plain `$ref`.
-- **`nullable` properties are never `required`,** so they are always generated as `Option`.
+- **Models that appear in responses have no `required` fields,** so all their fields are `Option`. The spec's `required` describes what the server validates on input, and a `null` in a non-`Option` field would fail decoding the whole response. Request-only models keep `required`.
 - **Content types:** only `application/json` request and response bodies are kept.
 - **`date-time` fields in models are `String`.** The server emits ASP.NET timestamps, which may have no offset, and `java.time.Instant` would reject those.
 - **Date-only parameters are `java.time.LocalDate`.** These are `date-time` parameters whose description says `yyyy-MM-dd`, currently `dateFrom` and `dateTo` of `Personnel.ApiPublicCalendarsGet`. They are sent as `2026-11-02`. Other `date-time` query parameters stay `java.time.Instant` and are sent in UTC (`2026-11-02T10:00:00Z`). The spec doesn't say how the server maps that to its local time, so near midnight the server may read a different date than the UTC one.

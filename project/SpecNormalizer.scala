@@ -15,24 +15,39 @@ object SpecNormalizer {
     val definitions = schemas(spec)
     val unsupported = (op: Json) => hasObjectQueryParam(op, definitions)
     val paths = spec.hcursor.downField("paths").as[JsonObject].getOrElse(JsonObject.empty)
-    val operations = paths.values.flatMap(_.asObject.toList.flatMap(_.values))
-    val dropped = operations.filter(unsupported).map(_.hcursor.get[String]("operationId").getOrElse("?")).toList
+    val dropped = operations(paths).filter(unsupported).map(_.hcursor.get[String]("operationId").getOrElse("?")).toList
 
     val kept = paths
       .mapValues(_.mapObject(_.filter { case (_, op) => !unsupported(op) }.mapValues(normalizeOperation)))
       .filter { case (_, item) => item.asObject.exists(_.nonEmpty) }
 
     val trimmed = spec.mapObject(_.add("paths", Json.fromJsonObject(kept)).remove("tags"))
-    // Unwrap last: it discards the wrapper's `nullable`, which relaxNullableRequired still needs.
-    val relaxed = rewriteSchemas(trimmed)(relaxDateTime.andThen(relaxNullableRequired))
+    // The spec's `required` is ASP.NET input validation; the server still sends null in those fields.
+    val responses = responseModels(kept, definitions)
+    val relaxed = rewriteSchemas(trimmed) { (name, schema) =>
+      rewriteObjects(schema)(if (responses(name)) relaxDateTime.andThen(_.remove("required")) else relaxDateTime)
+    }
     Normalized(rewriteObjects(relaxed)(unwrapSingleAllOf), dropped)
   }
+
+  private def operations(paths: JsonObject): Iterable[Json] = paths.values.flatMap(_.asObject.toList.flatMap(_.values))
+
+  private def responseModels(paths: JsonObject, definitions: JsonObject): Set[String] = {
+    def reachable(seen: Set[String], name: String): Set[String] =
+      if (seen(name)) seen else definitions(name).toList.flatMap(refs).foldLeft(seen + name)(reachable)
+    val roots = operations(paths).flatMap(_.asObject.flatMap(_("responses"))).flatMap(refs)
+    roots.foldLeft(Set.empty[String])(reachable)
+  }
+
+  private def refs(json: Json): List[String] = json.findAllByKey("$ref").flatMap(_.asString).map(schemaName)
+
+  private def schemaName(ref: String): String = ref.stripPrefix("#/components/schemas/")
 
   // A list of objects in a query string has no portable encoding; the server expects ASP.NET's `p[0].Field=` binding.
   private def hasObjectQueryParam(op: Json, definitions: JsonObject): Boolean = {
     def isObject(schema: ACursor): Boolean =
       (schema.get[String]("$ref").toOption, schema.get[String]("type").toOption) match {
-        case (Some(ref), _)      => definitions(ref.stripPrefix("#/components/schemas/")).exists(d => isObject(d.hcursor))
+        case (Some(ref), _)      => definitions(schemaName(ref)).exists(d => isObject(d.hcursor))
         case (_, Some("object")) => true
         case (_, Some("array"))  => isObject(schema.downField("items"))
         case _                   => schema.downField("allOf").values.exists(_.exists(s => isObject(s.hcursor)))
@@ -66,8 +81,10 @@ object SpecNormalizer {
   private def sanitizeTag(tag: String): String =
     tag.split(" - ").head.split("[^A-Za-z0-9]+").filter(_.nonEmpty).map(_.capitalize).mkString
 
-  private def rewriteSchemas(spec: Json)(f: JsonObject => JsonObject): Json =
-    spec.mapObject(update(_, "components")(_.mapObject(update(_, "schemas")(rewriteObjects(_)(f)))))
+  private def rewriteSchemas(spec: Json)(f: (String, Json) => Json): Json =
+    spec.mapObject(update(_, "components")(_.mapObject(update(_, "schemas")(_.mapObject { schemas =>
+      JsonObject.fromIterable(schemas.toList.map { case (name, schema) => name -> f(name, schema) })
+    }))))
 
   private def rewriteObjects(json: Json)(f: JsonObject => JsonObject): Json =
     json.arrayOrObject(
@@ -87,9 +104,4 @@ object SpecNormalizer {
     if (isDateTime(obj)) obj.remove("format") else obj
 
   private def isDateTime(schema: JsonObject): Boolean = schema("format").contains(Json.fromString("date-time"))
-
-  private def relaxNullableRequired(schema: JsonObject): JsonObject = {
-    def nullable(name: String) = schema("properties").exists(_.hcursor.downField(name).get[Boolean]("nullable").contains(true))
-    update(schema, "required")(_.mapArray(_.filterNot(_.asString.exists(nullable))))
-  }
 }
