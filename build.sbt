@@ -41,8 +41,8 @@ lazy val core = project
     fetchSpec := Def.uncached {
       IO.writeFileAtomically(rawSpec.value) { staging =>
         sbt.io.Using.urlInputStream(uri("https://platforma2.taxxo.pl/swagger/v1/swagger.json").toURL)(IO.transfer(_, staging))
-        // Throws on a truncated or non-JSON download, so it never replaces the vendored spec.
-        SpecNormalizer.load(staging.toPath)
+        // Throws on a download that doesn't parse or normalize, so it never replaces the vendored spec.
+        SpecNormalizer.normalize(SpecNormalizer.load(staging.toPath))
       }
       streams.value.log.info(s"Saved ${rawSpec.value}")
     },
@@ -54,6 +54,12 @@ lazy val core = project
       "com.github.plokhotnyuk.jsoniter-scala" %% "jsoniter-scala-core" % jsoniterVersion,
       "com.github.plokhotnyuk.jsoniter-scala" %% "jsoniter-scala-macros" % jsoniterVersion % "provided",
       "com.github.plokhotnyuk.jsoniter-scala" %% "jsoniter-scala-circe" % jsoniterVersion,
-      "org.scalameta" %% "munit" % "1.3.6" % Test
+      "org.scalameta" %% "munit" % "1.3.6" % Test,
+      "com.softwaremill.sttp.client4" %% "cats" % sttpVersion % Test,
+      "org.typelevel" %% "cats-effect" % "3.7.1" % Test,
+      "org.typelevel" %% "munit-cats-effect" % "2.2.0" % Test,
+      "com.softwaremill.sttp.client4" %% "zio" % sttpVersion % Test,
+      "dev.zio" %% "zio-test" % "2.1.27" % Test,
+      "dev.zio" %% "zio-test-sbt" % "2.1.27" % Test
     )
   )

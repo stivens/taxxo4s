@@ -2,59 +2,19 @@ package taxxo4s
 
 import java.time.LocalDate
 
-import scala.collection.mutable.ListBuffer
-
-import sttp.client4.{Backend, GenericRequest, SttpClientException, StringBody}
-import sttp.client4.testing.{BackendStub, ResponseStub}
+import sttp.client4.{SttpClientException, StringBody}
 import sttp.model.{Method, StatusCode}
-import sttp.monad.{IdentityMonad, MonadError}
-import sttp.monad.syntax.*
 import sttp.tapir.DecodeResult
 import taxxo4s.generated.{Documents, Invoices, Personnel}
 import taxxo4s.generated.TaxxoEndpoints.*
 import taxxo4s.generated.enums.APIAbsenceRequestStatusEnum
+import taxxo4s.FakeTaxxo.{config, error, ok, Reply}
 
 class TaxxoClientSuite extends munit.FunSuite {
-
-  private val config = TaxxoConfig(apiKey = "secret-key")
-
-  private def ok(data: String) = s"""{"Data":$data,"Status":0,"Message":null,"ErrorCode":null,"AdditionalData":null,"IsStatusOK":true}"""
-  private def error(code: Int, message: String) =
-    s"""{"Data":null,"Status":1,"Message":"$message","ErrorCode":$code,"AdditionalData":"extra","IsStatusOK":false}"""
 
   private val absenceRequests =
     """[{"AbsenceRequestId":7,"General":{"Flag":0,"AbsenceType":1,"RequestStatus":-1},
       |  "Periods":[{"DateFrom":"2026-11-02T00:00:00","DateTo":"2026-11-03T00:00:00"}]}]""".stripMargin
-
-  private type Handler = PartialFunction[(GenericRequest[?, ?], String), String]
-
-  private class FakeTaxxo[F[_]](monad: MonadError[F], status: StatusCode)(handler: Handler) {
-    val requests = ListBuffer.empty[GenericRequest[?, ?]]
-    var raceLogin = false
-    def authCalls: Int = requests.count(_.uri.path.last == "authenticate")
-    def logoutCalls: Int = requests.count(_.uri.path.last == "logout")
-    def calls: List[(String, Option[String])] = requests.map(r => (r.uri.path.last, r.header("Authorization"))).toList
-    val backend: Backend[F] = BackendStub(monad).whenRequestMatchesPartial { req =>
-      requests += req
-      if (req.uri.path.last == "authenticate") {
-        val token = s"token-$authCalls"
-        if (raceLogin) { raceLogin = false; client.authenticate }
-        ResponseStub.adjust(ok(s"\"$token\""))
-      } else {
-        val token = req.header("Authorization").getOrElse("")
-        handler.lift((req, token)) match {
-          case Some(body) => ResponseStub.adjust(body, status)
-          case None       => ResponseStub.adjust("", StatusCode.Unauthorized)
-        }
-      }
-    }
-    val client = TaxxoClient(config, backend)
-  }
-
-  private object FakeTaxxo {
-    def apply(handler: Handler, status: StatusCode = StatusCode.Ok) = new FakeTaxxo(IdentityMonad, status)(handler)
-    def lazily(handler: Handler) = new FakeTaxxo(Lazy.monad, StatusCode.Ok)(handler)
-  }
 
   test("authenticate posts the API key as a JSON string and stores the session token") {
     val fake = FakeTaxxo(PartialFunction.empty)
@@ -87,14 +47,12 @@ class TaxxoClientSuite extends munit.FunSuite {
   }
 
   test("expired token (ErrorCode=10) triggers exactly one re-authentication and a retry") {
-    val fake = FakeTaxxo {
-      case (_, "token-1") => error(10, "Token expired")
-      case (_, "token-2") => ok("""{"DocumentId":1}""")
-    }
+    val fake = FakeTaxxo { case _ => ok("""{"DocumentId":1}""") }
+    fake.client.authenticate
+    fake.expire("token-1")
     val result = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1)
     assertEquals(result.map(_.DocumentId), Right(Some(1)))
-    assertEquals(fake.authCalls, 2)
-    assertEquals(fake.logoutCalls, 0, "the rejected token must not be logged out")
+    assertEquals(fake.calls, List(("authenticate", None), ("1", Some("token-1")), ("authenticate", None), ("1", Some("token-2"))))
   }
 
   test("HTTP 401 triggers re-authentication, but a second rejection is returned, not retried forever") {
@@ -104,15 +62,25 @@ class TaxxoClientSuite extends munit.FunSuite {
     assertEquals(fake.authCalls, 2)
   }
 
-  test("HTTP error responses keep their body") {
+  test("a non-2xx response carrying ErrorCode=10 also triggers re-authentication") {
+    val fake = FakeTaxxo {
+      case (_, "token-1") => Reply(StatusCode.BadRequest, error(10, "Token expired"))
+      case (_, "token-2") => ok("""{"DocumentId":1}""")
+    }
+    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).map(_.DocumentId), Right(Some(1)))
+    assertEquals(fake.authCalls, 2)
+  }
+
+  test("HTTP error responses keep their body, and other error codes are not retried") {
     val body = error(7, "DateFrom is required")
-    val fake = FakeTaxxo({ case _ => body }, StatusCode.BadRequest)
+    val fake = FakeTaxxo { case _ => Reply(StatusCode.BadRequest, body) }
     assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1), Left(TaxxoError.Http(400, body)))
+    assertEquals(fake.authCalls, 1)
   }
 
   test("HTTP error messages include only an excerpt of a large body") {
     val body = "x" * 10000
-    val fake = FakeTaxxo({ case _ => body }, StatusCode.InternalServerError)
+    val fake = FakeTaxxo { case _ => Reply(StatusCode.InternalServerError, body) }
     assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).left.map(_.getMessage),
       Left(s"Taxxo API returned HTTP 500: ${"x" * 500}… (9500 more characters)"))
   }
@@ -121,21 +89,6 @@ class TaxxoClientSuite extends munit.FunSuite {
     val io = new java.io.IOException("connection reset")
     val fake = FakeTaxxo { case (req, _) => throw new SttpClientException.ReadException(req, io) }
     assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).left.map(_.getCause.getCause), Left(io))
-  }
-
-  test("on a lazy backend, logout built before authenticate ran still logs out") {
-    val fake = FakeTaxxo.lazily { case (req, _) if req.uri.path.last == "logout" => """{"Status":0}""" }
-    val logout = fake.client.logout
-    assertEquals(fake.client.authenticate.flatMap(_ => logout).run(), Right(()))
-    assertEquals(fake.calls, List(("authenticate", None), ("logout", Some("token-1"))))
-  }
-
-  test("on a lazy backend, a reused call description authenticates once") {
-    val fake = FakeTaxxo.lazily { case _ => ok("""{"DocumentId":1}""") }
-    val fetch = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1)
-    fetch.run()
-    fetch.run()
-    assertEquals((fake.authCalls, fake.requests.size), (1, 3))
   }
 
   test("a response type without the envelope fields is rejected at compile time") {
@@ -166,19 +119,28 @@ class TaxxoClientSuite extends munit.FunSuite {
     }
   }
 
-  test("authenticating again logs out the session it replaces, and succeeds even if that logout fails") {
+  test("authenticating again logs out the session it replaces") {
     val fake = FakeTaxxo(PartialFunction.empty)
     assertEquals(fake.client.authenticate, Right("token-1"))
     assertEquals(fake.client.authenticate, Right("token-2"))
     assertEquals(fake.calls, List(("authenticate", None), ("authenticate", None), ("logout", Some("token-1"))))
   }
 
-  test("a first call whose login loses a race logs out the session it overwrote, then uses its own") {
-    val fake = FakeTaxxo { case (_, "token-1") => ok("""{"DocumentId":1}""") }
-    fake.raceLogin = true
-    val result = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1)
-    assertEquals(result.map(_.DocumentId), Right(Some(1)))
-    assertEquals(fake.calls, List(("authenticate", None), ("authenticate", None), ("logout", Some("token-2")), ("1", Some("token-1"))))
+  test("authenticating again succeeds even if logging out the replaced session throws") {
+    val fake = FakeTaxxo(PartialFunction.empty)
+    fake.client.authenticate
+    fake.failNextLogout(throw new IllegalStateException("backend closed"))
+    assertEquals(fake.client.authenticate, Right("token-2"))
+    fake.failNextLogout(throw new IllegalStateException("backend closed"))
+    intercept[IllegalStateException](fake.client.logout)
+  }
+
+  test("concurrent implicit logins never log out a session another call is using") {
+    val fake = FakeTaxxo { case (_, "token-2") => ok("""{"DocumentId":1}""") }
+    def fetch() = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).map(_.DocumentId)
+    fake.onLogin(assertEquals(fetch(), Right(Some(1))))
+    assertEquals(fetch(), Right(Some(1)))
+    assertEquals(fake.calls.filter(_._1 != "authenticate"), List(("1", Some("token-2")), ("logout", Some("token-1")), ("1", Some("token-2"))))
   }
 
   test("date-only query parameters are sent as yyyy-MM-dd") {
@@ -193,23 +155,35 @@ class TaxxoClientSuite extends munit.FunSuite {
   }
 
   test("logout calls the API with the session token and clears it") {
-    val fake = FakeTaxxo { case (req, "token-1") if req.uri.path.last == "logout" => """{"Status":0}""" }
+    val fake = FakeTaxxo(PartialFunction.empty)
     fake.client.authenticate
     assertEquals(fake.client.logout, Right(()))
     assertEquals(fake.client.logout, Right(()))
-    assertEquals(fake.logoutCalls, 1)
+    assertEquals(fake.calls.filter(_._1 == "logout"), List(("logout", Some("token-1"))))
+  }
+
+  test("after logout, the next call starts a new session") {
+    val fake = FakeTaxxo { case _ => ok("""{"DocumentId":1}""") }
+    fake.client.authenticate
+    fake.client.logout
+    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).map(_.DocumentId), Right(Some(1)))
+    assertEquals(fake.calls, List(("authenticate", None), ("logout", Some("token-1")), ("authenticate", None), ("1", Some("token-2"))))
   }
 
   test("logging out a session the server already rejects succeeds") {
-    val fake = FakeTaxxo { case (req, "token-1") if req.uri.path.last == "logout" => error(10, "Token expired") }
+    val fake = FakeTaxxo(PartialFunction.empty)
     fake.client.authenticate
+    fake.failNextLogout(error(10, "Token expired"))
     assertEquals(fake.client.logout, Right(()))
   }
 
-  test("logout reports other API errors") {
-    val fake = FakeTaxxo { case (req, "token-1") if req.uri.path.last == "logout" => error(6, "Action failed") }
+  test("a failed logout reports the error and keeps the session, so it can be retried") {
+    val fake = FakeTaxxo(PartialFunction.empty)
     fake.client.authenticate
+    fake.failNextLogout(error(6, "Action failed"))
     assertEquals(fake.client.logout, Left(TaxxoError.Api(Some(6), Some("Action failed"), Some("extra"))))
+    assertEquals(fake.client.logout, Right(()))
+    assertEquals(fake.calls.filter(_._1 == "logout"), List.fill(2)(("logout", Some("token-1"))))
   }
 
   test("required fields of response models decode a null, request models still demand them") {

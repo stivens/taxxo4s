@@ -2,15 +2,24 @@ package taxxo4s
 
 import java.util.concurrent.atomic.AtomicReference
 
+import scala.util.Try
+import scala.util.control.NonFatal
+
+import com.github.plokhotnyuk.jsoniter_scala.core.{readFromString, JsonValueCodec}
+import com.github.plokhotnyuk.jsoniter_scala.macros.JsonCodecMaker
 import sttp.client4.{Backend, SttpClientException}
 import sttp.model.{HeaderNames, StatusCode}
 import sttp.monad.MonadError
 import sttp.monad.syntax.*
-import sttp.tapir.{stringBody, DecodeResult, PublicEndpoint}
+import sttp.tapir.*
 import sttp.tapir.client.sttp4.SttpClientInterpreter
-import taxxo4s.generated.General
+import sttp.tapir.json.jsoniter.*
+import taxxo4s.generated.TaxxoEndpoints.{APIResponse, StringAPIDataResponse}
+import taxxo4s.generated.TaxxoEndpointsJsonSerdes.*
 
 final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
+  import TaxxoClient.*
+
   private given monad: MonadError[F] = backend.monad
   private val interpreter = SttpClientInterpreter()
   private val session = new AtomicReference[Option[String]](None)
@@ -31,7 +40,7 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
     currentToken.flatMapRight { token =>
       sendWithToken(e, input, Some(token)).flatMap { result =>
         if (tokenRejected(result)) {
-          session.updateAndGet(_.filterNot(_ == token))
+          forget(token)
           currentToken.flatMapRight(fresh => sendWithToken(e, input, Some(fresh)))
         } else monad.unit(result)
       }
@@ -40,28 +49,43 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
   def send[R](e: PublicEndpoint[Unit, Unit, R, Any])(using Envelope[R]): F[Either[TaxxoError, R]] =
     send[Unit, R](e)(())
 
-  /** Starts a new session. A session this client already held is logged out; failing to do so does not fail this call. */
+  /** Starts a new session and logs out the one it replaces; failing to log that one out does not fail this call. */
   def authenticate: F[Either[TaxxoError, String]] =
-    sendWithToken(General.ApiPublicAuthenticatePost, (config.culture, Some(config.apiKey)), token = None)
-      .map(_.flatMap(checkStatus).flatMap(_.Data.filter(_.nonEmpty).toRight(TaxxoError.MissingData)))
-      .flatMapRight { token =>
-        session.getAndSet(Some(token)) match {
-          case Some(replaced) if replaced != token => endSession(replaced).map(_ => Right(token))
-          case _                                   => monad.unit(Right(token))
-        }
+    login.flatMapRight { token =>
+      session.getAndSet(Some(token)) match {
+        case Some(replaced) if replaced != token => discard(replaced).map(_ => Right(token))
+        case _                                   => monad.unit(Right(token))
       }
+    }
 
   def logout: F[Either[TaxxoError, Unit]] =
-    monad.suspend(session.getAndSet(None).fold(monad.unit(Right(())))(endSession))
+    monad.suspend(session.get.fold(monad.unit(Right(())))(token => endSession(token).map(_.map(_ => forget(token)))))
+
+  private def forget(token: String): Unit =
+    session.updateAndGet(_.filterNot(_ == token))
+
+  private def login: F[Either[TaxxoError, String]] =
+    sendWithToken(Login, (config.culture, config.apiKey), token = None)
+      .map(_.flatMap(checkStatus).flatMap(_.Data.filter(_.nonEmpty).toRight(TaxxoError.MissingData)))
+
+  private def currentToken: F[Either[TaxxoError, String]] =
+    monad.suspend(session.get.fold(login.flatMapRight(adopt))(t => monad.unit(Right(t))))
+
+  // Another fiber may be using the session that won, so a losing implicit login ends its own instead of replacing it.
+  private def adopt(token: String): F[Either[TaxxoError, String]] =
+    session.compareAndExchange(None, Some(token)) match {
+      case None         => monad.unit(Right(token))
+      case Some(winner) => discard(token).map(_ => Right(winner))
+    }
+
+  private def discard(token: String): F[Unit] =
+    endSession(token).map(_ => ()).handleError { case NonFatal(_) => monad.unit(()) }
 
   // A token the server already rejects is as logged out as it gets.
   private def endSession(token: String): F[Either[TaxxoError, Unit]] =
-    sendWithToken(General.ApiPublicLogoutGet, (), Some(token)).map { result =>
+    sendWithToken(Logout, (), Some(token)).map { result =>
       if (tokenRejected(result)) Right(()) else result.flatMap(checkStatus).map(_ => ())
     }
-
-  private def currentToken: F[Either[TaxxoError, String]] =
-    monad.suspend(session.get.fold(authenticate)(t => monad.unit(Right(t))))
 
   private def sendWithToken[I, R](e: PublicEndpoint[I, Unit, R, Any], input: I, token: Option[String]): F[Either[TaxxoError, R]] = {
     val request = interpreter.toRequest(e.errorOut(stringBody), Some(config.baseUri)).apply(input)
@@ -83,7 +107,8 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
 
   private def tokenRejected[R](result: Either[TaxxoError, R])(using Envelope[R]): Boolean =
     result.flatMap(checkStatus) match {
-      case Left(TaxxoError.Http(code, _))        => code == StatusCode.Unauthorized.code
+      case Left(TaxxoError.Http(code, body)) =>
+        code == StatusCode.Unauthorized.code || Try(readFromString[APIResponse](body)).toOption.exists(r => tokenRejected(Right(r)))
       case Left(TaxxoError.Api(errorCode, _, _)) => errorCode.contains(TokenExpiredOrInvalid)
       case _                                     => false
     }
@@ -92,6 +117,22 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
     private def flatMapRight[B](f: A => F[Either[TaxxoError, B]]): F[Either[TaxxoError, B]] =
       fa.flatMap(_.fold(err => monad.unit(Left(err)), f))
   }
+}
 
+object TaxxoClient {
   private val TokenExpiredOrInvalid = 10
+
+  private given JsonValueCodec[String] = JsonCodecMaker.make
+  // Codegen spreads schemas over numbered files by count, so importing them would break when a spec refresh moves one.
+  private given Schema[APIResponse] = Schema.derived
+  private given Schema[StringAPIDataResponse] = Schema.derived
+
+  private val Login =
+    endpoint.post
+      .in("api" / "public" / "authenticate")
+      .in(query[Option[String]]("culture"))
+      .in(jsonBody[String])
+      .out(jsonBody[StringAPIDataResponse])
+
+  private val Logout = endpoint.get.in("api" / "public" / "logout").out(jsonBody[APIResponse])
 }

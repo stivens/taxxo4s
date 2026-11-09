@@ -6,15 +6,52 @@ object SpecNormalizer {
 
   final case class Normalized(spec: Json, droppedOperations: List[String])
 
-  def load(path: Path): Json = parse(Files.readString(path)).fold(throw _, identity)
+  def load(path: Path): Json = json(Files.readString(path))
+
+  private def json(s: String): Json = parse(s).fold(throw _, identity)
+
+  private def requireOpenApi(spec: Json): Unit = {
+    require(spec.hcursor.get[String]("openapi").isRight, "not an OpenAPI document (no `openapi` version field)")
+    require(schemas(spec).nonEmpty, "the spec has no component schemas")
+    val paths = pathItems(spec)
+    clientSessionOperations.foreach { (path, fragment) =>
+      require(paths(path).exists(includes(_, fragment)), s"the spec's $path no longer matches what TaxxoClient sends and decodes")
+    }
+  }
+
+  private def includes(actual: Json, fragment: Json): Boolean =
+    fragment.arrayOrObject(
+      actual == fragment,
+      fs => actual.asArray.exists(as => fs.forall(f => as.exists(includes(_, f)))),
+      fo => actual.asObject.exists(ao => fo.toList.forall((k, f) => ao(k).exists(includes(_, f))))
+    )
 
   def schemas(spec: Json): JsonObject =
     spec.hcursor.downField("components").downField("schemas").as[JsonObject].getOrElse(JsonObject.empty)
 
+  private def pathItems(spec: Json): JsonObject =
+    spec.hcursor.downField("paths").as[JsonObject].getOrElse(JsonObject.empty)
+
+  // TaxxoClient owns the session; exposing these would let callers bypass it.
+  private val sessionPath = "/api/public/(authenticate.*|logout)".r
+  // TaxxoClient hand-writes these, so no generated code would fail to compile if they changed.
+  private val clientSessionOperations = List(
+    "/api/public/authenticate" -> json("""{"post": {
+      "parameters": [{"name": "culture", "in": "query"}],
+      "requestBody": {"content": {"application/json": {"schema": {"type": "string"}}}},
+      "responses": {"200": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/StringAPIDataResponse"}}}}}
+    }}"""),
+    "/api/public/logout" -> json("""{"get": {
+      "responses": {"200": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/APIResponse"}}}}}
+    }}""")
+  )
+
   def normalize(spec: Json): Normalized = {
+    requireOpenApi(spec)
     val definitions = schemas(spec)
     val unsupported = (op: Json) => hasObjectQueryParam(op, definitions)
-    val paths = spec.hcursor.downField("paths").as[JsonObject].getOrElse(JsonObject.empty)
+    val allPaths = pathItems(spec)
+    val paths = allPaths.filterKeys(!sessionPath.matches(_))
     val dropped = operations(paths).filter(unsupported).map(_.hcursor.get[String]("operationId").getOrElse("?")).toList
 
     val kept = paths
@@ -23,9 +60,10 @@ object SpecNormalizer {
 
     val trimmed = spec.mapObject(_.add("paths", Json.fromJsonObject(kept)).remove("tags"))
     // The spec's `required` is ASP.NET input validation; the server still sends null in those fields.
-    val responses = responseModels(kept, definitions)
+    // Session operations count too: TaxxoClient still decodes their responses.
+    val responses = responseModels(allPaths, definitions)
     val relaxed = rewriteSchemas(trimmed) { (name, schema) =>
-      rewriteObjects(schema)(if (responses(name)) relaxDateTime.andThen(_.remove("required")) else relaxDateTime)
+      rewriteObjects(schema)(if (responses(name)) relaxDateTime.andThen(dropRequired) else relaxDateTime)
     }
     Normalized(rewriteObjects(relaxed)(unwrapSingleAllOf), dropped)
   }
@@ -92,6 +130,10 @@ object SpecNormalizer {
       arr => Json.fromValues(arr.map(rewriteObjects(_)(f))),
       obj => Json.fromJsonObject(f(obj).mapValues(rewriteObjects(_)(f)))
     )
+
+  // The keyword is always an array; an object under `required` is a property schema of a field named so.
+  private def dropRequired(obj: JsonObject): JsonObject =
+    if (obj("required").exists(_.isArray)) obj.remove("required") else obj
 
   private def unwrapSingleAllOf(obj: JsonObject): JsonObject =
     obj("allOf").flatMap(_.asArray).collect { case Vector(single) if single.hcursor.downField("$ref").succeeded => single }
