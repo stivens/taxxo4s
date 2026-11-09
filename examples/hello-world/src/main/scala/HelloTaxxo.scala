@@ -4,7 +4,7 @@ import taxxo4s.generated.General
 
 def greeting(apiKey: String, backend: SyncBackend): String =
   val taxxo = TaxxoClient(TaxxoConfig(apiKey), backend)
-  val message = taxxo.call(General.ApiPublicContextinfoGet)(()) match
+  val message = taxxo.call(General.ApiPublicContextinfoGet) match
     case Right(ctx) =>
       s"Hello, ${ctx.UserName.getOrElse("Taxxo user")}! Connected to ${ctx.CustomerName.getOrElse("an unnamed customer")}."
     case Left(error) =>

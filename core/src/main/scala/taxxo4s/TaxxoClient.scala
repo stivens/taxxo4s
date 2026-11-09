@@ -18,8 +18,14 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
   def call[I, R](e: PublicEndpoint[I, Unit, R, Any])(input: I)(using env: Envelope[R]): F[Either[TaxxoError, env.Data]] =
     callOpt(e)(input).map(_.flatMap(_.toRight(TaxxoError.MissingData)))
 
+  def call[R](e: PublicEndpoint[Unit, Unit, R, Any])(using env: Envelope[R]): F[Either[TaxxoError, env.Data]] =
+    call[Unit, R](e)(())
+
   def callOpt[I, R](e: PublicEndpoint[I, Unit, R, Any])(input: I)(using env: Envelope[R]): F[Either[TaxxoError, Option[env.Data]]] =
     send(e)(input).map(_.flatMap(r => checkStatus(r).map(env.data)))
+
+  def callOpt[R](e: PublicEndpoint[Unit, Unit, R, Any])(using env: Envelope[R]): F[Either[TaxxoError, Option[env.Data]]] =
+    callOpt[Unit, R](e)(())
 
   def send[I, R](e: PublicEndpoint[I, Unit, R, Any])(input: I)(using Envelope[R]): F[Either[TaxxoError, R]] =
     currentToken.flatMapRight { token =>
@@ -30,6 +36,9 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
         } else monad.unit(result)
       }
     }
+
+  def send[R](e: PublicEndpoint[Unit, Unit, R, Any])(using Envelope[R]): F[Either[TaxxoError, R]] =
+    send[Unit, R](e)(())
 
   /** Starts a new session. A session this client already held is logged out; failing to do so does not fail this call. */
   def authenticate: F[Either[TaxxoError, String]] =

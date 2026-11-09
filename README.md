@@ -15,8 +15,8 @@ val taxxo = TaxxoClient(TaxxoConfig(apiKey = sys.env("TAXXO_API_KEY")), DefaultS
 val document = taxxo.call(Documents.ApiPublicDocumentByDocumentIdGet)(42)   // Either[TaxxoError, APIDocumentResultOne]
 
 val summary = for {
-  ctx      <- taxxo.call(General.ApiPublicContextinfoGet)(())
-  requests <- taxxo.call(Personnel.ApiPublicAbsenceRequestsGet)(())
+  ctx      <- taxxo.call(General.ApiPublicContextinfoGet)
+  requests <- taxxo.call(Personnel.ApiPublicAbsenceRequestsGet)
   drafts    = requests.filter(_.General.exists(_.RequestStatus.contains(APIAbsenceRequestStatusEnum.Draft)))
 } yield s"${ctx.UserName.getOrElse("?")} has ${drafts.size} draft absence requests"   // Either[TaxxoError, String]
 ```

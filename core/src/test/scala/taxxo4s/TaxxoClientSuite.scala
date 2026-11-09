@@ -66,7 +66,7 @@ class TaxxoClientSuite extends munit.FunSuite {
 
   test("call authenticates lazily, sends the token and returns decoded Data") {
     val fake = FakeTaxxo { case (req, "token-1") if req.uri.path.last == "absenceRequests" => ok(absenceRequests) }
-    val result = fake.client.call(Personnel.ApiPublicAbsenceRequestsGet)(())
+    val result = fake.client.call(Personnel.ApiPublicAbsenceRequestsGet)
     val absence = result.toOption.get.head
     assertEquals(absence.AbsenceRequestId, Some(7))
     assertEquals(absence.General.flatMap(_.RequestStatus), Some(APIAbsenceRequestStatusEnum.Draft))
