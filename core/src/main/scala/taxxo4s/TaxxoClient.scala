@@ -97,7 +97,7 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
           // tapir's sttp interpreter wraps the parser error in an exception whose message is the whole body.
           val parserError = Option(failure.getCause).getOrElse(failure)
           Left(TaxxoError.Decode(s"${e.showShort}: ${parserError.getMessage}", Some(parserError)))
-        case f: DecodeResult.Failure        => Left(TaxxoError.Decode(s"${e.showShort}: $f", None))
+        case f: DecodeResult.Failure => Left(TaxxoError.Decode(s"${e.showShort}: $f", None))
       }
     }.handleError { case e: SttpClientException => monad.unit(Left(TaxxoError.Transport(e))) }
   }

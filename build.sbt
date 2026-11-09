@@ -5,6 +5,11 @@ val jsoniterVersion = "2.42.2"
 ThisBuild / scalaVersion := "3.9.0"
 ThisBuild / organization := "io.github.stivens"
 ThisBuild / version := "0.0.1"
+ThisBuild / semanticdbEnabled := true
+
+// The root's scalafmtRepo already covers every subproject's files.
+scalafmtRepo / aggregate := false
+scalafmtCheckRepo / aggregate := false
 
 val rawSpec = settingKey[File]("Vendored Taxxo OpenAPI spec, as downloaded")
 val fetchSpec = taskKey[Unit]("Download the latest Taxxo OpenAPI spec into spec/")
@@ -15,12 +20,14 @@ lazy val core = project
   .enablePlugins(OpenapiCodegenPlugin)
   .settings(
     name := "taxxo4s",
-    scalacOptions ++= Seq("-feature", "-deprecation", "-Wconf:src=src_managed/.*:s"),
+    scalacOptions ++= Seq("-feature", "-deprecation", "-Wunused:all", "-Wconf:src=src_managed/.*:s"),
     rawSpec := (ThisBuild / baseDirectory).value / "spec" / "taxxo-v1.raw.json",
     openapiSwaggerFile := target.value / "openapi" / "taxxo-v1.json",
     normalizeSpec := Def.uncached {
       val normalized = SpecNormalizer.normalize(SpecNormalizer.load(rawSpec.value.toPath))
-      normalized.droppedOperations.foreach(op => streams.value.log.warn(s"Skipping unsupported operation $op (object-typed query parameter)"))
+      normalized.droppedOperations.foreach(op =>
+        streams.value.log.warn(s"Skipping unsupported operation $op (object-typed query parameter)")
+      )
       IO.write(openapiSwaggerFile.value, normalized.spec.spaces2)
       openapiSwaggerFile.value
     },

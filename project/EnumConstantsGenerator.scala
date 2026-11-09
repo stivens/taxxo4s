@@ -8,7 +8,7 @@ object EnumConstantsGenerator {
       val c = s.hcursor
       for {
         values <- c.get[List[Long]]("enum").toOption if c.get[String]("type").contains("integer")
-        names <- c.get[List[String]]("x-enumNames").toOption if names.size == values.size
+        names  <- c.get[List[String]]("x-enumNames").toOption if names.size == values.size
       } yield renderEnum(name, s"_root_.$pkg.$modelsObject", names.zip(values))
     }
     s"package $pkg.enums\n\n${enums.mkString("\n")}"

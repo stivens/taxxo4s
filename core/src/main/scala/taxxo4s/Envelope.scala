@@ -49,9 +49,9 @@ object Envelope {
 
   private inline def indexOf[Labels <: Tuple, Types <: Tuple, L <: String, T](inline acc: Int, inline required: Boolean): Int =
     inline erasedValue[(Labels, Types)] match {
-      case _: (L *: _, T *: _)   => acc
-      case _: (L *: _, _ *: _)   => error("Not a Taxxo response envelope: field " + constValue[L] + " has an unexpected type")
-      case _: (_ *: ls, _ *: ts) => indexOf[ls, ts, L, T](acc + 1, required)
+      case _: (L *: _, T *: _)         => acc
+      case _: (L *: _, _ *: _)         => error("Not a Taxxo response envelope: field " + constValue[L] + " has an unexpected type")
+      case _: (_ *: ls, _ *: ts)       => indexOf[ls, ts, L, T](acc + 1, required)
       case _: (EmptyTuple, EmptyTuple) =>
         inline if (required) error("Not a Taxxo response envelope: missing field " + constValue[L]) else -1
     }

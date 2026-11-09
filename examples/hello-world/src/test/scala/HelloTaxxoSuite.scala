@@ -14,9 +14,9 @@ class HelloTaxxoSuite extends munit.FunSuite {
       requests += req
       req.uri.path.last match {
         case "authenticate" if req.body.toString.contains(validKey) => ResponseStub.adjust(envelope("\"session-1\""))
-        case "authenticate"                                          => ResponseStub.adjust(envelope("null", 1, "1", "\"Invalid API key\""))
-        case "contextinfo"                                           => ResponseStub.adjust(contextInfo)
-        case "logout"                                                => ResponseStub.adjust(envelope("null"))
+        case "authenticate"                                         => ResponseStub.adjust(envelope("null", 1, "1", "\"Invalid API key\""))
+        case "contextinfo"                                          => ResponseStub.adjust(contextInfo)
+        case "logout"                                               => ResponseStub.adjust(envelope("null"))
       }
     }
     def paths: List[String] = requests.map(_.uri.path.last).toList

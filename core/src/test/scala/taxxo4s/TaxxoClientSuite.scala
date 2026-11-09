@@ -2,13 +2,13 @@ package taxxo4s
 
 import java.time.LocalDate
 
-import sttp.client4.{SttpClientException, StringBody}
+import sttp.client4.{StringBody, SttpClientException}
 import sttp.model.{Method, StatusCode}
 import sttp.tapir.DecodeResult
+import taxxo4s.FakeTaxxo.{config, error, ok, Reply}
 import taxxo4s.generated.{Documents, Invoices, Personnel}
 import taxxo4s.generated.TaxxoEndpoints.*
 import taxxo4s.generated.enums.APIAbsenceRequestStatusEnum
-import taxxo4s.FakeTaxxo.{config, error, ok, Reply}
 
 class TaxxoClientSuite extends munit.FunSuite {
 
@@ -81,8 +81,10 @@ class TaxxoClientSuite extends munit.FunSuite {
   test("HTTP error messages include only an excerpt of a large body") {
     val body = "x" * 10000
     val fake = FakeTaxxo { case _ => Reply(StatusCode.InternalServerError, body) }
-    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).left.map(_.getMessage),
-      Left(s"Taxxo API returned HTTP 500: ${"x" * 500}… (9500 more characters)"))
+    assertEquals(
+      fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).left.map(_.getMessage),
+      Left(s"Taxxo API returned HTTP 500: ${"x" * 500}… (9500 more characters)")
+    )
   }
 
   test("transport failures become TaxxoError.Transport instead of being thrown") {
@@ -140,7 +142,10 @@ class TaxxoClientSuite extends munit.FunSuite {
     def fetch() = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).map(_.DocumentId)
     fake.onLogin(assertEquals(fetch(), Right(Some(1))))
     assertEquals(fetch(), Right(Some(1)))
-    assertEquals(fake.calls.filter(_._1 != "authenticate"), List(("1", Some("token-2")), ("logout", Some("token-1")), ("1", Some("token-2"))))
+    assertEquals(
+      fake.calls.filter(_._1 != "authenticate"),
+      List(("1", Some("token-2")), ("logout", Some("token-1")), ("1", Some("token-2")))
+    )
   }
 
   test("date-only query parameters are sent as yyyy-MM-dd") {

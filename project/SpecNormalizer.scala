@@ -1,6 +1,7 @@
+import java.nio.file.{Files, Path}
+
 import io.circe.*
 import io.circe.parser.parse
-import java.nio.file.{Files, Path}
 
 object SpecNormalizer {
 

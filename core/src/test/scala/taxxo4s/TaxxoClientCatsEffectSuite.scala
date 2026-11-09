@@ -3,7 +3,6 @@ package taxxo4s
 import scala.concurrent.duration.*
 
 import cats.effect.IO
-import cats.syntax.all.*
 import munit.CatsEffectSuite
 import sttp.client4.SttpClientException
 import sttp.client4.impl.cats.CatsMonadAsyncError

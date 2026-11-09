@@ -58,7 +58,7 @@ object TaxxoClientZioSpec extends ZIOSpecDefault {
       val unreachable = server { case (req, _) => throw new SttpClientException.ConnectException(req, new java.net.ConnectException) }
       val broken = server { case _ => throw new IllegalStateException("backend closed") }
       for {
-        result <- fetch(unreachable)
+        result  <- fetch(unreachable)
         failure <- fetch(broken).flip
       } yield assertTrue(
         result.left.exists(_.isInstanceOf[TaxxoError.Transport]),

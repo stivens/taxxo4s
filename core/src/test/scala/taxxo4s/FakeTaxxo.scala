@@ -46,7 +46,7 @@ final class FakeTaxxo[F[_]](monad: MonadError[F], latency: F[Unit])(handler: Fak
       case "logout" =>
         logoutFailure.getAndSet(None) match {
           case Some(failure) => failure()
-          case None =>
+          case None          =>
             sessions.put(token, Session.LoggedOut)
             """{"Status":0}"""
         }
