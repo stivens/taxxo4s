@@ -64,7 +64,7 @@ lazy val core = project
       "org.scalameta" %% "munit" % "1.3.6" % Test,
       "com.softwaremill.sttp.client4" %% "cats" % sttpVersion % Test,
       "org.typelevel" %% "cats-effect" % "3.7.1" % Test,
-      "org.typelevel" %% "munit-cats-effect" % "2.2.0" % Test,
+      "org.typelevel" %% "munit-cats-effect" % "2.2.1" % Test,
       "com.softwaremill.sttp.client4" %% "zio" % sttpVersion % Test,
       "dev.zio" %% "zio-test" % "2.1.27" % Test,
       "dev.zio" %% "zio-test-sbt" % "2.1.27" % Test
