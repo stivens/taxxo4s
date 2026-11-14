@@ -1,6 +1,6 @@
 val tapirVersion = "1.14.1"
 val sttpVersion = "4.1.1"
-val jsoniterVersion = "2.42.3"
+val jsoniterVersion = "2.43.0"
 
 ThisBuild / scalaVersion := "3.9.0"
 ThisBuild / organization := "io.github.stivens"
