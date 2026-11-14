@@ -1,5 +1,5 @@
 val tapirVersion = "1.14.1"
-val sttpVersion = "4.1.1"
+val sttpVersion = "4.1.2"
 val jsoniterVersion = "2.42.3"
 
 ThisBuild / scalaVersion := "3.9.0"
