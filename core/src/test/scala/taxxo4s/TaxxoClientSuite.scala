@@ -7,8 +7,8 @@ import sttp.model.{Method, StatusCode}
 import sttp.tapir.DecodeResult
 import taxxo4s.FakeTaxxo.{config, error, ok, Reply}
 import taxxo4s.generated.{Documents, Invoices, Personnel}
-import taxxo4s.generated.TaxxoEndpoints.*
 import taxxo4s.generated.enums.APIAbsenceRequestStatusEnum
+import taxxo4s.generated.raw.TaxxoEndpoints.*
 
 class TaxxoClientSuite extends munit.FunSuite {
 
@@ -36,13 +36,13 @@ class TaxxoClientSuite extends munit.FunSuite {
 
   test("path parameters are encoded into the URI") {
     val fake = FakeTaxxo { case (req, _) if req.uri.path == List("api", "public", "document", "42") => ok("""{"DocumentId":42}""") }
-    val doc = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(42)
+    val doc = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(42))
     assertEquals(doc.map(_.DocumentId), Right(Some(42)))
   }
 
   test("Status=Error becomes TaxxoError.Api") {
     val fake = FakeTaxxo { case _ => error(7, "Incorrect data") }
-    val result = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1)
+    val result = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(1))
     assertEquals(result, Left(TaxxoError.Api(Some(7), Some("Incorrect data"), Some("extra"))))
   }
 
@@ -50,14 +50,14 @@ class TaxxoClientSuite extends munit.FunSuite {
     val fake = FakeTaxxo { case _ => ok("""{"DocumentId":1}""") }
     fake.client.authenticate
     fake.expire("token-1")
-    val result = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1)
+    val result = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(1))
     assertEquals(result.map(_.DocumentId), Right(Some(1)))
     assertEquals(fake.calls, List(("authenticate", None), ("1", Some("token-1")), ("authenticate", None), ("1", Some("token-2"))))
   }
 
   test("HTTP 401 triggers re-authentication, but a second rejection is returned, not retried forever") {
     val fake = FakeTaxxo(PartialFunction.empty)
-    val result = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1)
+    val result = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(1))
     assertEquals(result, Left(TaxxoError.Http(401, "")))
     assertEquals(fake.authCalls, 2)
   }
@@ -67,14 +67,14 @@ class TaxxoClientSuite extends munit.FunSuite {
       case (_, "token-1") => Reply(StatusCode.BadRequest, error(10, "Token expired"))
       case (_, "token-2") => ok("""{"DocumentId":1}""")
     }
-    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).map(_.DocumentId), Right(Some(1)))
+    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(1)).map(_.DocumentId), Right(Some(1)))
     assertEquals(fake.authCalls, 2)
   }
 
   test("HTTP error responses keep their body, and other error codes are not retried") {
     val body = error(7, "DateFrom is required")
     val fake = FakeTaxxo { case _ => Reply(StatusCode.BadRequest, body) }
-    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1), Left(TaxxoError.Http(400, body)))
+    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(1)), Left(TaxxoError.Http(400, body)))
     assertEquals(fake.authCalls, 1)
   }
 
@@ -82,7 +82,7 @@ class TaxxoClientSuite extends munit.FunSuite {
     val body = "x" * 10000
     val fake = FakeTaxxo { case _ => Reply(StatusCode.InternalServerError, body) }
     assertEquals(
-      fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).left.map(_.getMessage),
+      fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(1)).left.map(_.getMessage),
       Left(s"Taxxo API returned HTTP 500: ${"x" * 500}… (9500 more characters)")
     )
   }
@@ -90,7 +90,7 @@ class TaxxoClientSuite extends munit.FunSuite {
   test("transport failures become TaxxoError.Transport instead of being thrown") {
     val io = new java.io.IOException("connection reset")
     val fake = FakeTaxxo { case (req, _) => throw new SttpClientException.ReadException(req, io) }
-    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).left.map(_.getCause.getCause), Left(io))
+    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(1)).left.map(_.getCause.getCause), Left(io))
   }
 
   test("a response type without the envelope fields is rejected at compile time") {
@@ -100,19 +100,19 @@ class TaxxoClientSuite extends munit.FunSuite {
 
   test("status-only responses (APIResponse) yield Unit") {
     val fake = FakeTaxxo { case (req, _) if req.method == Method.DELETE => """{"Status":0,"Message":"Deleted"}""" }
-    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdDelete)(1), Right(()))
+    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdDelete(1)), Right(()))
   }
 
   test("OK without Data is MissingData for call, None for callOpt") {
     val fake = FakeTaxxo { case _ => ok("null") }
-    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1), Left(TaxxoError.MissingData))
-    assertEquals(fake.client.callOpt(Documents.ApiPublicDocumentByDocumentIdGet)(1), Right(None))
+    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(1)), Left(TaxxoError.MissingData))
+    assertEquals(fake.client.callOpt(Documents.ApiPublicDocumentByDocumentIdGet(1)), Right(None))
   }
 
   test("malformed JSON becomes TaxxoError.Decode, keeping the parser error as the cause but not the body") {
     val sensitive = "PESEL-12345"
     val fake = FakeTaxxo { case _ => s"""{"Data": {"DocumentId": "not-a-number"}, "Message": "$sensitive"}""" }
-    fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1) match {
+    fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(1)) match {
       case Left(error: TaxxoError.Decode) =>
         assert(error.getCause.isInstanceOf[DecodeResult.Error.JsonDecodeException], error.getCause)
         assert(!error.getMessage.contains(sensitive), error.getMessage)
@@ -139,7 +139,7 @@ class TaxxoClientSuite extends munit.FunSuite {
 
   test("concurrent implicit logins never log out a session another call is using") {
     val fake = FakeTaxxo { case (_, "token-2") => ok("""{"DocumentId":1}""") }
-    def fetch() = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).map(_.DocumentId)
+    def fetch() = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(1)).map(_.DocumentId)
     fake.onLogin(assertEquals(fetch(), Right(Some(1))))
     assertEquals(fetch(), Right(Some(1)))
     assertEquals(
@@ -150,7 +150,7 @@ class TaxxoClientSuite extends munit.FunSuite {
 
   test("date-only query parameters are sent as yyyy-MM-dd") {
     val fake = FakeTaxxo { case (req, _) if req.uri.path.last == "calendars" => ok("[]") }
-    val result = fake.client.call(Personnel.ApiPublicCalendarsGet)((Some(LocalDate.of(2026, 11, 2)), None))
+    val result = fake.client.call(Personnel.ApiPublicCalendarsGet(dateFrom = Some(LocalDate.of(2026, 11, 2))))
     assertEquals(result, Right(Nil))
     assertEquals(fake.requests.last.uri.params.get("dateFrom"), Some("2026-11-02"))
   }
@@ -171,7 +171,7 @@ class TaxxoClientSuite extends munit.FunSuite {
     val fake = FakeTaxxo { case _ => ok("""{"DocumentId":1}""") }
     fake.client.authenticate
     fake.client.logout
-    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1).map(_.DocumentId), Right(Some(1)))
+    assertEquals(fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(1)).map(_.DocumentId), Right(Some(1)))
     assertEquals(fake.calls, List(("authenticate", None), ("logout", Some("token-1")), ("authenticate", None), ("1", Some("token-2"))))
   }
 
@@ -193,7 +193,7 @@ class TaxxoClientSuite extends munit.FunSuite {
 
   test("required fields of response models decode a null, request models still demand them") {
     val fake = FakeTaxxo { case (req, _) if req.uri.path.last == "last" => ok("""[{"ContractorId":3,"Name":null}]""") }
-    val result = fake.client.call(Invoices.ApiPublicInvoicesContractorsLastGet)((None, None))
+    val result = fake.client.call(Invoices.ApiPublicInvoicesContractorsLastGet())
     assertEquals(result.map(_.map(c => (c.ContractorId, c.Name))), Right(List((Some(3), None))))
     assert(compileErrors("APIContractor(Name = None)").contains("Found:    None.type"))
   }

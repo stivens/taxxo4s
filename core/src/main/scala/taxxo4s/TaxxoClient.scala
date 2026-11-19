@@ -14,8 +14,8 @@ import sttp.monad.syntax.*
 import sttp.tapir.*
 import sttp.tapir.client.sttp4.SttpClientInterpreter
 import sttp.tapir.json.jsoniter.*
-import taxxo4s.generated.TaxxoEndpoints.{APIResponse, StringAPIDataResponse}
-import taxxo4s.generated.TaxxoEndpointsJsonSerdes.*
+import taxxo4s.generated.raw.TaxxoEndpoints.{APIResponse, StringAPIDataResponse}
+import taxxo4s.generated.raw.TaxxoEndpointsJsonSerdes.*
 
 final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
   import TaxxoClient.*
@@ -24,30 +24,21 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
   private val interpreter = SttpClientInterpreter()
   private val session = new AtomicReference[Option[String]](None)
 
-  def call[I, R](e: PublicEndpoint[I, Unit, R, Any])(input: I)(using env: Envelope[R]): F[Either[TaxxoError, env.Data]] =
-    callOpt(e)(input).map(_.flatMap(_.toRight(TaxxoError.MissingData)))
+  def call[R](request: TaxxoRequest[R])(using env: Envelope[R]): F[Either[TaxxoError, env.Data]] =
+    callOpt(request).map(_.flatMap(_.toRight(TaxxoError.MissingData)))
 
-  def call[R](e: PublicEndpoint[Unit, Unit, R, Any])(using env: Envelope[R]): F[Either[TaxxoError, env.Data]] =
-    call[Unit, R](e)(())
+  def callOpt[R](request: TaxxoRequest[R])(using env: Envelope[R]): F[Either[TaxxoError, Option[env.Data]]] =
+    send(request).map(_.flatMap(r => checkStatus(r).map(env.data)))
 
-  def callOpt[I, R](e: PublicEndpoint[I, Unit, R, Any])(input: I)(using env: Envelope[R]): F[Either[TaxxoError, Option[env.Data]]] =
-    send(e)(input).map(_.flatMap(r => checkStatus(r).map(env.data)))
-
-  def callOpt[R](e: PublicEndpoint[Unit, Unit, R, Any])(using env: Envelope[R]): F[Either[TaxxoError, Option[env.Data]]] =
-    callOpt[Unit, R](e)(())
-
-  def send[I, R](e: PublicEndpoint[I, Unit, R, Any])(input: I)(using Envelope[R]): F[Either[TaxxoError, R]] =
+  def send[R](request: TaxxoRequest[R])(using Envelope[R]): F[Either[TaxxoError, R]] =
     currentToken.flatMapRight { token =>
-      sendWithToken(e, input, Some(token)).flatMap { result =>
+      sendWithToken(request, Some(token)).flatMap { result =>
         if (tokenRejected(result)) {
           forget(token)
-          currentToken.flatMapRight(fresh => sendWithToken(e, input, Some(fresh)))
+          currentToken.flatMapRight(fresh => sendWithToken(request, Some(fresh)))
         } else monad.unit(result)
       }
     }
-
-  def send[R](e: PublicEndpoint[Unit, Unit, R, Any])(using Envelope[R]): F[Either[TaxxoError, R]] =
-    send[Unit, R](e)(())
 
   /** Starts a new session and logs out the one it replaces; failing to log that one out does not fail this call. */
   def authenticate: F[Either[TaxxoError, String]] =
@@ -65,7 +56,7 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
     session.updateAndGet(_.filterNot(_ == token))
 
   private def login: F[Either[TaxxoError, String]] =
-    sendWithToken(Login, (config.culture, config.apiKey), token = None)
+    sendWithToken(TaxxoRequest(Login, (config.culture, config.apiKey)), token = None)
       .map(_.flatMap(checkStatus).flatMap(_.Data.filter(_.nonEmpty).toRight(TaxxoError.MissingData)))
 
   private def currentToken: F[Either[TaxxoError, String]] =
@@ -83,21 +74,21 @@ final class TaxxoClient[F[_]](config: TaxxoConfig, backend: Backend[F]) {
 
   // A token the server already rejects is as logged out as it gets.
   private def endSession(token: String): F[Either[TaxxoError, Unit]] =
-    sendWithToken(Logout, (), Some(token)).map { result =>
+    sendWithToken(TaxxoRequest(Logout, ()), Some(token)).map { result =>
       if (tokenRejected(result)) Right(()) else result.flatMap(checkStatus).map(_ => ())
     }
 
-  private def sendWithToken[I, R](e: PublicEndpoint[I, Unit, R, Any], input: I, token: Option[String]): F[Either[TaxxoError, R]] = {
-    val request = interpreter.toRequest(e.errorOut(stringBody), Some(config.baseUri)).apply(input)
+  private def sendWithToken[R](r: TaxxoRequest[R], token: Option[String]): F[Either[TaxxoError, R]] = {
+    val request = interpreter.toRequest(r.endpoint.errorOut(stringBody), Some(config.baseUri)).apply(r.input)
     token.fold(request)(request.header(HeaderNames.Authorization, _)).send(backend).map { response =>
       response.body match {
-        case DecodeResult.Value(Right(r))   => Right(r)
-        case DecodeResult.Value(Left(body)) => Left(TaxxoError.Http(response.code.code, body))
-        case DecodeResult.Error(_, failure) =>
+        case DecodeResult.Value(Right(value)) => Right(value)
+        case DecodeResult.Value(Left(body))   => Left(TaxxoError.Http(response.code.code, body))
+        case DecodeResult.Error(_, failure)   =>
           // tapir's sttp interpreter wraps the parser error in an exception whose message is the whole body.
           val parserError = Option(failure.getCause).getOrElse(failure)
-          Left(TaxxoError.Decode(s"${e.showShort}: ${parserError.getMessage}", Some(parserError)))
-        case f: DecodeResult.Failure => Left(TaxxoError.Decode(s"${e.showShort}: $f", None))
+          Left(TaxxoError.Decode(s"${r.endpoint.showShort}: ${parserError.getMessage}", Some(parserError)))
+        case f: DecodeResult.Failure => Left(TaxxoError.Decode(s"${r.endpoint.showShort}: $f", None))
       }
     }.handleError { case e: SttpClientException => monad.unit(Left(TaxxoError.Transport(e))) }
   }

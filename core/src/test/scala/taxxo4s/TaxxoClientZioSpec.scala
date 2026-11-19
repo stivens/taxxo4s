@@ -10,7 +10,7 @@ import zio.test.*
 object TaxxoClientZioSpec extends ZIOSpecDefault {
 
   private def server(handler: FakeTaxxo.Handler) = new FakeTaxxo[Task](new RIOMonadAsyncError[Any], ZIO.sleep(10.millis))(handler)
-  private def fetch(fake: FakeTaxxo[Task]) = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1)
+  private def fetch(fake: FakeTaxxo[Task]) = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(1))
   private val document = ok("""{"DocumentId":1}""")
 
   def spec = suite("TaxxoClient on ZIO")(

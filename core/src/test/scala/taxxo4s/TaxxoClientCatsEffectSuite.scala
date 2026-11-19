@@ -12,7 +12,7 @@ import taxxo4s.generated.Documents
 class TaxxoClientCatsEffectSuite extends CatsEffectSuite {
 
   private def server(handler: FakeTaxxo.Handler) = new FakeTaxxo(new CatsMonadAsyncError[IO], IO.sleep(10.millis))(handler)
-  private def fetch(fake: FakeTaxxo[IO]) = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet)(1)
+  private def fetch(fake: FakeTaxxo[IO]) = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(1))
   private val document = ok("""{"DocumentId":1}""")
 
   test("a reused call description authenticates once") {
