@@ -50,23 +50,37 @@ object SpecNormalizer {
   def normalize(spec: Json): Normalized = {
     requireOpenApi(spec)
     val definitions = schemas(spec)
-    val unsupported = (op: Json) => hasObjectQueryParam(op, definitions)
     val allPaths = pathItems(spec)
-    val paths = allPaths.filterKeys(!sessionPath.matches(_))
-    val dropped = operations(paths).filter(unsupported).map(_.hcursor.get[String]("operationId").getOrElse("?")).toList
+    val (supported, dropped) = dropOperations(allPaths.filterKeys(!sessionPath.matches(_))) { (_, _, op) =>
+      Option.when(hasObjectQueryParam(op, definitions))("object-typed query parameter")
+    }
+    val kept = supported.mapValues(_.mapObject(_.mapValues(normalizeOperation)))
 
-    val kept = paths
-      .mapValues(_.mapObject(_.filter { case (_, op) => !unsupported(op) }.mapValues(normalizeOperation)))
-      .filter { case (_, item) => item.asObject.exists(_.nonEmpty) }
-
-    val trimmed = spec.mapObject(_.add("paths", Json.fromJsonObject(kept)).remove("tags"))
+    val trimmed = spec.mapObject(_.add("paths", Json.fromJsonObject(kept)).remove("tags").remove("security"))
     // The spec's `required` is ASP.NET input validation; the server still sends null in those fields.
     // Session operations count too: TaxxoClient still decodes their responses.
     val responses = responseModels(allPaths, definitions)
     val relaxed = rewriteSchemas(trimmed) { (name, schema) =>
       rewriteObjects(schema)(if (responses(name)) relaxDateTime.andThen(dropRequired) else relaxDateTime)
     }
-    Normalized(rewriteObjects(relaxed)(unwrapSingleAllOf), dropped)
+    val normalized = rewriteObjects(relaxed)(unwrapSingleAllOf)
+    // Dropping what RequestsGenerator can't build keeps one such operation from blocking a whole spec refresh.
+    val rejected = RequestsGenerator.unsupported(normalized)
+    val (buildable, rejections) = dropOperations(pathItems(normalized))((url, method, _) => rejected.get((url, method)))
+    Normalized(normalized.mapObject(_.add("paths", Json.fromJsonObject(buildable))), dropped ++ rejections)
+  }
+
+  private def dropOperations(paths: JsonObject)(reason: (String, String, Json) => Option[String]): (JsonObject, List[String]) = {
+    val dropped = for {
+      (url, item)  <- paths.toList
+      (method, op) <- item.asObject.toList.flatMap(_.toList)
+      why          <- reason(url, method, op)
+    } yield (url, method) -> s"${op.hcursor.get[String]("operationId").getOrElse("?")} ($why)"
+    val keys = dropped.map(_._1).toSet
+    val kept = JsonObject
+      .fromIterable(paths.toList.map((url, item) => url -> item.mapObject(_.filterKeys(method => !keys((url, method))))))
+      .filter { case (_, item) => item.asObject.exists(_.nonEmpty) }
+    (kept, dropped.map(_._2))
   }
 
   private def operations(paths: JsonObject): Iterable[Json] = paths.values.flatMap(_.asObject.toList.flatMap(_.values))
@@ -101,7 +115,8 @@ object SpecNormalizer {
       val withTags = update(o, "tags")(_.mapArray(_.map(_.mapString(sanitizeTag))))
       val withParams = update(withTags, "parameters")(_.mapArray(_.map(_.mapObject(dateOnlyParam))))
       val withBody = update(withParams, "requestBody")(onlyJsonContent)
-      update(withBody, "responses")(_.mapObject(_.mapValues(onlyJsonContent)))
+      // TaxxoClient sends the session token itself; a security input would stop the endpoints being public.
+      update(withBody, "responses")(_.mapObject(_.mapValues(onlyJsonContent))).remove("security")
     }
 
   // An Instant's UTC date can differ from the date the server reads.

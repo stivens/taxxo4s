@@ -15,14 +15,18 @@ object RequestsGenerator {
 
   private final case class Operation(tag: String, name: String, summary: Option[String], inputs: List[Input])
 
-  def parse(spec: Json): OpenapiDocument = spec.as[OpenapiDocument].fold(throw _, identity)
+  private final class Unsupported(reason: String) extends RuntimeException(reason)
 
-  def render(doc: OpenapiDocument, pkg: String, rawPkg: String, models: String): Map[String, String] =
-    operations(doc, models).groupBy(_.tag).map((tag, ops) => tag -> renderObject(pkg, rawPkg, tag, ops))
+  def render(spec: Json, pkg: String, rawPkg: String, models: String): Map[String, String] =
+    operations(spec, models).groupBy(_.tag).map((tag, ops) => tag -> renderObject(pkg, rawPkg, tag, ops))
+
+  /** Why no builder can be generated, by path and method. */
+  def unsupported(spec: Json): Map[(String, String), String] =
+    attempts(spec, models = "").collect { case (url, m, Left(reason)) => (url, m.methodType) -> reason }.toMap
 
   // Lets a test check that each tuple is built in tapir's input order, which the types alone can't catch.
-  def renderInputOrder(doc: OpenapiDocument, pkg: String, rawPkg: String, models: String): String = {
-    val ops = operations(doc, models)
+  def renderInputOrder(spec: Json, pkg: String, rawPkg: String, models: String): String = {
+    val ops = operations(spec, models)
     val endpoints = ops.map(_.tag).distinct.sorted.map(t => s"    _root_.$rawPkg.$t.generatedEndpoints").mkString(",\n")
     val names = ops.map { op =>
       s"    _root_.$rawPkg.${op.tag}.${op.name} -> List(${op.inputs.map(i => quote(i.name)).mkString(", ")})"
@@ -41,17 +45,24 @@ object RequestsGenerator {
        |""".stripMargin
   }
 
-  private def operations(doc: OpenapiDocument, models: String): List[Operation] = {
+  private def operations(spec: Json, models: String): List[Operation] =
+    attempts(spec, models).map((url, m, result) => result.fold(reason => sys.error(s"${m.name(url)}: $reason"), identity))
+
+  private def attempts(spec: Json, models: String): List[(String, OpenapiPathMethod, Either[String, Operation])] = {
+    val doc = spec.as[OpenapiDocument].fold(throw _, identity)
     val shared = doc.components.map(_.parameters).getOrElse(Map.empty)
     for {
       path   <- doc.paths.toList
       method <- path.methods.toList.map(_.withResolvedParentParameters(shared, path.parameters))
-    } yield operation(path.url, method, doc, models)
+    } yield {
+      val result = try Right(operation(path.url, method, doc, models))
+      catch { case u: Unsupported => Left(u.getMessage) }
+      (path.url, method, result)
+    }
   }
 
   private def operation(url: String, m: OpenapiPathMethod, doc: OpenapiDocument, models: String): Operation = {
-    val name = m.name(url)
-    def fail(msg: String): Nothing = sys.error(s"$name: $msg")
+    def fail(msg: String): Nothing = throw new Unsupported(msg)
 
     // Must agree with tapir codegen's mapping; a disagreement fails compiling the generated `TaxxoRequest(…)` call.
     def scalaType(schema: OpenapiSchemaType): String = schema match {
@@ -84,13 +95,18 @@ object RequestsGenerator {
     val bodyInput = m.requestBody.map(_.resolve(doc)).map { b =>
       val json = b.content.find(_.contentType == "application/json").getOrElse(fail("request body is not JSON"))
       val tpe = scalaType(json.schema)
-      val (wrapped, default) = if (b.required) (tpe, None) else optional(tpe)
+      // tapir codegen also makes a required body optional when its schema is nullable.
+      val nullable = json.schema.nullable || (json.schema match {
+        case ref: OpenapiSchemaRef => doc.components.flatMap(_.schemas.get(ref.stripped)).exists(_.nullable)
+        case _                     => false
+      })
+      val (wrapped, default) = if (b.required && !nullable) (tpe, None) else optional(tpe)
       Input("body", wrapped, default, text(b.description))
     }
 
     val inputs = pathInputs ++ queryInputs ++ bodyInput
     inputs.groupBy(_.name).collect { case (n, dups) if dups.size > 1 => n }.foreach(n => fail(s"two inputs named `$n`"))
-    Operation(tag, name, text(m.summary), inputs)
+    Operation(tag, m.name(url), text(m.summary), inputs)
   }
 
   private def optional(tpe: String): (String, Option[String]) = (s"Option[$tpe]", Some("None"))
@@ -110,20 +126,19 @@ object RequestsGenerator {
   private def renderOperation(rawObject: String, op: Operation): String = {
     val endpoint = s"$rawObject.${op.name}"
     val doc = scaladoc(op.summary, op.inputs.flatMap(i => i.description.map(i.ident -> _)))
+    val request = s"TaxxoRequest($endpoint, ${op.inputs.map(_.ident).mkString("(", ", ", ")")})"
     op.inputs match {
-      case Nil    => s"$doc  lazy val ${op.name} = TaxxoRequest($endpoint, ())\n"
+      case Nil    => s"$doc  lazy val ${op.name} = $request\n"
       case inputs =>
         val params = inputs.sortBy(_.default.isDefined).map { i =>
           s"${i.ident}: ${i.tpe}${i.default.fold("")(d => s" = $d")}"
         }
-        val args = inputs.map(_.ident)
-        val input = if (args.size == 1) args.head else args.mkString("(", ", ", ")")
-        s"$doc  def ${op.name}(${params.mkString(", ")}) = TaxxoRequest($endpoint, $input)\n"
+        s"$doc  def ${op.name}(${params.mkString(", ")}) = $request\n"
     }
   }
 
   private def scaladoc(summary: Option[String], params: List[(String, String)]): String = {
-    def lines(s: String) = s.replace("*/", "*&#47;").split("\\r?\\n").map(_.trim).toList
+    def lines(s: String) = s.replace("*/", "*&#47;").replace("/*", "/&#42;").split("\\r?\\n").map(_.trim).toList
     val paramLines = params.map((n, d) => s"@param $n ${lines(d).filter(_.nonEmpty).mkString(" ")}")
     val body = summary.toList.flatMap(lines) ++ Option.when(summary.nonEmpty && paramLines.nonEmpty)("") ++ paramLines
     if (body.isEmpty) ""

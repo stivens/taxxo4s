@@ -11,19 +11,19 @@ Requires Scala 3.9 or newer, on the JVM.
 `build.sbt`:
 
 ```scala
-libraryDependencies += "io.github.stivens" %% "taxxo4s" % "0.0.2"
+libraryDependencies += "io.github.stivens" %% "taxxo4s" % "0.1.0"
 ```
 
 `scala-cli`:
 
 ```scala
-//> using dep "io.github.stivens::taxxo4s:0.0.2"
+//> using dep "io.github.stivens::taxxo4s:0.1.0"
 ```
 
 `scala-cli REPL`:
 
 ```bash
-scala-cli repl --dep io.github.stivens::taxxo4s:0.0.2
+scala-cli repl --dep io.github.stivens::taxxo4s:0.1.0
 ```
 
 ## Usage
@@ -141,7 +141,7 @@ taxxo.send(TaxxoRequest(status, ()))
 - **`date-time` fields in models are `String`.** The server emits ASP.NET timestamps, which may have no offset, and `java.time.Instant` would reject those.
 - **Date-only parameters are `java.time.LocalDate`.** These are `date-time` parameters whose description says `yyyy-MM-dd`, currently `dateFrom` and `dateTo` of `Personnel.ApiPublicCalendarsGet`. They are sent as `2026-11-02`. Other `date-time` query parameters stay `java.time.Instant` and are sent in UTC (`2026-11-02T10:00:00Z`). The spec doesn't say how the server maps that to its local time, so near midnight the server may read a different date than the UTC one.
 - **Login and logout operations are not generated** (`/api/public/authenticate*` and `/api/public/logout`). The client manages the session through `authenticate` and `logout`, and calling these operations directly would bypass that. The client only logs in with an API key; the user, accounting-office and query-string login variants are not supported.
-- **Unsupported operations are skipped,** with a warning at build time. These are operations taking a list of objects as a query parameter, currently only `ApiPublicAccountingDataBatchAccountValueByMonthGet`.
+- **Unsupported operations are skipped,** with a warning at build time. Currently that is only `ApiPublicAccountingDataBatchAccountValueByMonthGet`, which takes a list of objects as a query parameter. An operation is also skipped if it has no tag, a header or cookie parameter, a request body that isn't JSON, or a parameter named `body` next to a request body.
 
 Integer enums are generated as `Int` aliases, because tapir only supports string enums. Their named values are generated separately into `taxxo4s.generated.enums` (e.g. `APIResponseStatusType.OK`).
 

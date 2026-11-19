@@ -5,7 +5,7 @@ val repoUrl = uri("https://github.com/stivens/taxxo4s")
 
 ThisBuild / scalaVersion := "3.9.0"
 ThisBuild / organization := "io.github.stivens"
-ThisBuild / version := "0.0.2"
+ThisBuild / version := "0.1.0"
 ThisBuild / semanticdbEnabled := true
 ThisBuild / versionScheme := Some("early-semver")
 ThisBuild / publishTo := localStaging.value
@@ -47,9 +47,7 @@ lazy val core = project
     openapiSwaggerFile := target.value / "openapi" / "taxxo-v1.json",
     normalizeSpec := Def.uncached {
       val normalized = SpecNormalizer.normalize(SpecNormalizer.load(rawSpec.value.toPath))
-      normalized.droppedOperations.foreach(op =>
-        streams.value.log.warn(s"Skipping unsupported operation $op (object-typed query parameter)")
-      )
+      normalized.droppedOperations.foreach(op => streams.value.log.warn(s"Skipping unsupported operation $op"))
       IO.write(openapiSwaggerFile.value, normalized.spec.spaces2)
       openapiSwaggerFile.value
     },
@@ -60,19 +58,19 @@ lazy val core = project
       Seq(out)
     },
     generateRequests := Def.uncached {
-      val doc = RequestsGenerator.parse(SpecNormalizer.load(normalizeSpec.value.toPath))
+      val spec = SpecNormalizer.load(normalizeSpec.value.toPath)
       val dir = (Compile / sourceManaged).value / "taxxo-requests"
       IO.delete(dir)
-      RequestsGenerator.render(doc, publicPackage, rawPackage, models).toList.map { (name, source) =>
+      RequestsGenerator.render(spec, publicPackage, rawPackage, models).toList.map { (name, source) =>
         val out = dir / s"$name.scala"
         IO.write(out, source)
         out
       }
     },
     generateRequestInputOrder := Def.uncached {
-      val doc = RequestsGenerator.parse(SpecNormalizer.load(normalizeSpec.value.toPath))
+      val spec = SpecNormalizer.load(normalizeSpec.value.toPath)
       val out = (Test / sourceManaged).value / "taxxo-requests" / "RequestInputOrder.scala"
-      IO.write(out, RequestsGenerator.renderInputOrder(doc, publicPackage, rawPackage, models))
+      IO.write(out, RequestsGenerator.renderInputOrder(spec, publicPackage, rawPackage, models))
       Seq(out)
     },
     Compile / generateTapirDefinitions := (Compile / generateTapirDefinitions).dependsOn(normalizeSpec).value,
@@ -88,10 +86,9 @@ lazy val core = project
     fetchSpec := Def.uncached {
       IO.writeFileAtomically(rawSpec.value) { staging =>
         sbt.io.Using.urlInputStream(uri("https://platforma2.taxxo.pl/swagger/v1/swagger.json").toURL)(IO.transfer(_, staging))
-        // Throws on a download that doesn't parse, normalize or generate, so it never replaces the vendored spec.
+        // Throws on a download that doesn't parse, normalize or yield enum constants, before it replaces the vendored spec.
         val normalized = SpecNormalizer.normalize(SpecNormalizer.load(staging.toPath)).spec
         EnumConstantsGenerator.render(normalized, enumsPackage, models)
-        RequestsGenerator.render(RequestsGenerator.parse(normalized), publicPackage, rawPackage, models)
       }
       streams.value.log.info(s"Saved ${rawSpec.value}")
     },
