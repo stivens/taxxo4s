@@ -1,6 +1,6 @@
 val tapirVersion = "1.14.1"
-val sttpVersion = "4.1.1"
-val jsoniterVersion = "2.42.2"
+val sttpVersion = "4.1.3"
+val jsoniterVersion = "2.43.0"
 val repoUrl = uri("https://github.com/stivens/taxxo4s")
 
 ThisBuild / scalaVersion := "3.9.0"
@@ -79,7 +79,7 @@ lazy val core = project
       "org.scalameta" %% "munit" % "1.3.6" % Test,
       "com.softwaremill.sttp.client4" %% "cats" % sttpVersion % Test,
       "org.typelevel" %% "cats-effect" % "3.7.1" % Test,
-      "org.typelevel" %% "munit-cats-effect" % "2.2.0" % Test,
+      "org.typelevel" %% "munit-cats-effect" % "2.2.1" % Test,
       "com.softwaremill.sttp.client4" %% "zio" % sttpVersion % Test,
       "dev.zio" %% "zio-test" % "2.1.27" % Test,
       "dev.zio" %% "zio-test-sbt" % "2.1.27" % Test
