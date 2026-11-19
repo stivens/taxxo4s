@@ -2,6 +2,8 @@
 
 A Scala 3 client for the [Taxxo API](https://platforma2.taxxo.pl/api/documentation/index.html). All models and endpoints are generated at build time from the vendored OpenAPI spec using [tapir's OpenAPI codegen](https://tapir.softwaremill.com/en/latest/generator/sbt-openapi-codegen.html). The client is effect-agnostic: pass any sttp4 `Backend[F]` (sync, `Future`, cats-effect, ZIO).
 
+taxxo4s is an unofficial client, not affiliated with or endorsed by Taxxo or Columb Technologies S.A.
+
 ## Usage
 
 ```scala
@@ -60,3 +62,7 @@ sbt 'scalafixAll --check; scalafmtCheckRepo' # verify the same without changing 
 ```
 
 The generated sources go to `target/.../src_managed` and are not committed. Compiling the ~550 generated JSON codecs needs the larger heap configured in `.jvmopts`.
+
+## License
+
+MIT, except `spec/`; see [LICENSE](LICENSE).

@@ -1,11 +1,25 @@
 val tapirVersion = "1.14.1"
 val sttpVersion = "4.1.1"
 val jsoniterVersion = "2.42.2"
+val repoUrl = uri("https://github.com/stivens/taxxo4s")
 
 ThisBuild / scalaVersion := "3.9.0"
 ThisBuild / organization := "io.github.stivens"
 ThisBuild / version := "0.0.1"
 ThisBuild / semanticdbEnabled := true
+ThisBuild / versionScheme := Some("early-semver")
+ThisBuild / publishTo := localStaging.value
+ThisBuild / homepage := Some(repoUrl)
+ThisBuild / scmInfo := Some(ScmInfo(repoUrl, "scm:git@github.com:stivens/taxxo4s.git"))
+ThisBuild / licenses := List(License.MIT)
+ThisBuild / developers := List(
+  Developer(
+    id = "stivens",
+    name = "Jacek Bizub",
+    email = "jacekbizub@gmail.com",
+    url = uri("https://github.com/stivens")
+  )
+)
 
 // The root's scalafmtRepo already covers every subproject's files.
 scalafmtRepo / aggregate := false
@@ -20,6 +34,7 @@ lazy val core = project
   .enablePlugins(OpenapiCodegenPlugin)
   .settings(
     name := "taxxo4s",
+    description := "Scala client for the Taxxo API, generated from its OpenAPI spec",
     scalacOptions ++= Seq("-feature", "-deprecation", "-Wunused:all", "-Wconf:src=src_managed/.*:s"),
     rawSpec := (ThisBuild / baseDirectory).value / "spec" / "taxxo-v1.raw.json",
     openapiSwaggerFile := target.value / "openapi" / "taxxo-v1.json",
