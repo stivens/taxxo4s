@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+concurrency:
+  # Not github.workflow: under workflow_call that is the caller's name, so the group would cancel the caller.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Compile, lint and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TAXXO4S_VERSION: 0.0.0-ci
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: sbt
+          # project/*.scala are source generators, not dependency declarations, so editing them shouldn't evict the dependency cache.
+          cache-dependency-path: |
+            **/*.sbt
+            **/project/build.properties
+      - uses: sbt/setup-sbt@v1
+
+      - name: Compile
+        run: sbt core/Test/compile
+
+      - name: Lint
+        run: sbt 'scalafixAll --check; scalafmtCheckRepo'
+
+      # testFull, because a restored sbt cache would let `test` skip suites it considers unchanged.
+      - name: Test
+        run: sbt core/testFull
+
+      - name: Test example
+        run: |
+          sbt 'set ThisBuild / version := sys.env("TAXXO4S_VERSION"); core/publishLocal'
+          cd examples/hello-world && sbt testFull
