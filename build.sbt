@@ -30,7 +30,7 @@ val fetchSpec = taskKey[Unit]("Download the latest Taxxo OpenAPI spec into spec/
 val normalizeSpec = taskKey[File]("Rewrite the raw spec into a form tapir codegen accepts")
 val generateEnumConstants = taskKey[Seq[File]]("Generate named constants for the spec's integer enums")
 val generateRequests = taskKey[Seq[File]]("Generate named-parameter request builders for every endpoint")
-val generateRequestInputOrder = taskKey[Seq[File]]("Generate the input names the request builder order test checks")
+val generateTestFixtures = taskKey[Seq[File]]("Generate the per-endpoint fixtures the generated-code tests check")
 val publicPackage = "taxxo4s.generated"
 val rawPackage = s"$publicPackage.raw"
 val enumsPackage = s"$publicPackage.enums"
@@ -67,10 +67,10 @@ lazy val core = project
         out
       }
     },
-    generateRequestInputOrder := Def.uncached {
+    generateTestFixtures := Def.uncached {
       val spec = SpecNormalizer.load(normalizeSpec.value.toPath)
-      val out = (Test / sourceManaged).value / "taxxo-requests" / "RequestInputOrder.scala"
-      IO.write(out, RequestsGenerator.renderInputOrder(spec, publicPackage, rawPackage, models))
+      val out = (Test / sourceManaged).value / "taxxo-requests" / "EndpointFixtures.scala"
+      IO.write(out, RequestsGenerator.renderTestFixtures(spec, publicPackage, rawPackage, models))
       Seq(out)
     },
     Compile / generateTapirDefinitions := (Compile / generateTapirDefinitions).dependsOn(normalizeSpec).value,
@@ -82,7 +82,7 @@ lazy val core = project
     openapiDisableValidatorGeneration := true,
     Compile / sourceGenerators += generateEnumConstants.taskValue,
     Compile / sourceGenerators += generateRequests.taskValue,
-    Test / sourceGenerators += generateRequestInputOrder.taskValue,
+    Test / sourceGenerators += generateTestFixtures.taskValue,
     fetchSpec := Def.uncached {
       IO.writeFileAtomically(rawSpec.value) { staging =>
         sbt.io.Using.urlInputStream(uri("https://platforma2.taxxo.pl/swagger/v1/swagger.json").toURL)(IO.transfer(_, staging))

@@ -31,6 +31,10 @@ jobs:
             **/project/build.properties
       - uses: sbt/setup-sbt@v1
 
+      # A one-off foreground sbt: `reload plugins` on the shared background server would leave later steps in the meta-build.
+      - name: Test code generators
+        run: sbt --server --batch 'reload plugins' testFull
+
       - name: Compile
         run: sbt core/Test/compile
 

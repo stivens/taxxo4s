@@ -148,15 +148,16 @@ Integer enums are generated as `Int` aliases, because tapir only supports string
 ## Development
 
 ```sh
-sbt core/test                                # generate sources, compile and run tests (sbt 2 skips unchanged suites)
-sbt core/testFull                            # run every suite regardless of the test cache
-sbt core/fetchSpec                           # refresh spec/taxxo-v1.raw.json from the live API
-sbt core/publishLocal                        # needed before `sbt test` inside examples/hello-world, a separate build
-sbt 'scalafixAll; scalafmtRepo'              # remove unused code, then format the whole repo
-sbt 'scalafixAll --check; scalafmtCheckRepo' # verify the same without changing files
+sbt core/test                                  # generate sources, compile and run tests (sbt 2 skips unchanged suites)
+sbt core/testFull                              # run every suite regardless of the test cache
+sbt --server --batch 'reload plugins' testFull # test the spec normalizer and code generators in project/
+sbt core/fetchSpec                             # refresh spec/taxxo-v1.raw.json from the live API
+sbt core/publishLocal                          # needed before `sbt test` inside examples/hello-world, a separate build
+sbt 'scalafixAll; scalafmtRepo'                # remove unused code, then format the whole repo
+sbt 'scalafixAll --check; scalafmtCheckRepo'   # verify the same without changing files
 ```
 
-The generated sources go to `target/.../src_managed` and are not committed. Compiling the ~550 generated JSON codecs needs the larger heap configured in `.jvmopts`.
+The generator tests run in their own sbt process because `reload plugins` would otherwise leave the background sbt server in the meta-build. The generated sources go to `target/.../src_managed` and are not committed. Compiling the ~550 generated JSON codecs needs the larger heap configured in `.jvmopts`.
 
 ## License
 

@@ -24,26 +24,34 @@ object RequestsGenerator {
   def unsupported(spec: Json): Map[(String, String), String] =
     attempts(spec, models = "").collect { case (url, m, Left(reason)) => (url, m.methodType) -> reason }.toMap
 
-  // Lets a test check that each tuple is built in tapir's input order, which the types alone can't catch.
-  def renderInputOrder(spec: Json, pkg: String, rawPkg: String, models: String): String = {
+  // `inputNames` lets a test check that each tuple is built in tapir's input order, which the types alone can't catch.
+  // An `EndpointFixture` only compiles if the endpoint's response can be passed to `TaxxoClient.call`.
+  def renderTestFixtures(spec: Json, pkg: String, rawPkg: String, models: String): String = {
     val ops = operations(spec, models)
     val endpoints = ops.map(_.tag).distinct.sorted.map(t => s"    _root_.$rawPkg.$t.generatedEndpoints").mkString(",\n")
-    val names = ops.map { op =>
-      s"    _root_.$rawPkg.${op.tag}.${op.name} -> List(${op.inputs.map(i => quote(i.name)).mkString(", ")})"
+    val fixtures = ops.map { op =>
+      s"    EndpointFixture(${rawEndpoint(rawPkg, op)}, List(${op.inputs.map(i => quote(i.name)).mkString(", ")}))"
     }
     s"""package $pkg
        |
-       |private[taxxo4s] object RequestInputOrder {
-       |  val endpoints: List[_root_.sttp.tapir.AnyEndpoint] = List(
+       |import _root_.sttp.tapir.{AnyEndpoint, PublicEndpoint}
+       |import _root_.taxxo4s.Envelope
+       |
+       |private[taxxo4s] object EndpointFixtures {
+       |  final case class EndpointFixture[R](endpoint: PublicEndpoint[?, Unit, R, Any], inputNames: List[String])(using val envelope: Envelope[R])
+       |
+       |  val endpoints: List[AnyEndpoint] = List(
        |$endpoints
        |  ).flatten
        |
-       |  val names: Map[_root_.sttp.tapir.AnyEndpoint, List[String]] = Map(
-       |${names.mkString(",\n")}
+       |  val fixtures: List[EndpointFixture[?]] = List(
+       |${fixtures.mkString(",\n")}
        |  )
        |}
        |""".stripMargin
   }
+
+  private def rawEndpoint(rawPkg: String, op: Operation): String = s"_root_.$rawPkg.${op.tag}.${op.name}"
 
   private def operations(spec: Json, models: String): List[Operation] =
     attempts(spec, models).map((url, m, result) => result.fold(reason => sys.error(s"${m.name(url)}: $reason"), identity))
@@ -120,11 +128,11 @@ object RequestsGenerator {
        |
        |object $tag {
        |
-       |${ops.map(renderOperation(s"_root_.$rawPkg.$tag", _)).mkString("\n")}}
+       |${ops.map(renderOperation(rawPkg, _)).mkString("\n")}}
        |""".stripMargin
 
-  private def renderOperation(rawObject: String, op: Operation): String = {
-    val endpoint = s"$rawObject.${op.name}"
+  private def renderOperation(rawPkg: String, op: Operation): String = {
+    val endpoint = rawEndpoint(rawPkg, op)
     val doc = scaladoc(op.summary, op.inputs.flatMap(i => i.description.map(i.ident -> _)))
     val request = s"TaxxoRequest($endpoint, ${op.inputs.map(_.ident).mkString("(", ", ", ")")})"
     op.inputs match {

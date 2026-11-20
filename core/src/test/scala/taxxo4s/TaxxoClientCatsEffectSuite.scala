@@ -4,20 +4,16 @@ import scala.concurrent.duration.*
 
 import cats.effect.IO
 import munit.CatsEffectSuite
-import sttp.client4.SttpClientException
 import sttp.client4.impl.cats.CatsMonadAsyncError
-import taxxo4s.FakeTaxxo.ok
-import taxxo4s.generated.Documents
+import taxxo4s.FakeTaxxo.{document, unreachable}
 
 class TaxxoClientCatsEffectSuite extends CatsEffectSuite {
 
   private def server(handler: FakeTaxxo.Handler) = new FakeTaxxo(new CatsMonadAsyncError[IO], IO.sleep(10.millis))(handler)
-  private def fetch(fake: FakeTaxxo[IO]) = fake.client.call(Documents.ApiPublicDocumentByDocumentIdGet(1))
-  private val document = ok("""{"DocumentId":1}""")
 
   test("a reused call description authenticates once") {
     val fake = server { case _ => document }
-    fetch(fake).replicateA(2).map { results =>
+    fake.fetch.replicateA(2).map { results =>
       assertEquals(results.map(_.map(_.DocumentId)), List.fill(2)(Right(Some(1))))
       assertEquals(fake.authCalls, 1)
     }
@@ -34,7 +30,7 @@ class TaxxoClientCatsEffectSuite extends CatsEffectSuite {
 
   test("parallel first calls never use a logged-out session, and leave one open") {
     val fake = server { case _ => document }
-    fetch(fake).parReplicateA(20).map { results =>
+    fake.fetch.parReplicateA(20).map { results =>
       assert(results.forall(_.isRight), results)
       assertEquals(fake.loggedOutTokenUses, 0)
       assertEquals(fake.openSessions.size, 1)
@@ -45,7 +41,7 @@ class TaxxoClientCatsEffectSuite extends CatsEffectSuite {
     val fake = server { case _ => document }
     for {
       _       <- fake.client.authenticate.map(_.foreach(fake.expire))
-      results <- fetch(fake).parReplicateA(20)
+      results <- fake.fetch.parReplicateA(20)
     } yield {
       assert(results.forall(_.isRight), results)
       assertEquals(fake.loggedOutTokenUses, 0)
@@ -54,11 +50,11 @@ class TaxxoClientCatsEffectSuite extends CatsEffectSuite {
   }
 
   test("transport failures are values, other backend exceptions fail the IO") {
-    val unreachable = server { case (req, _) => throw new SttpClientException.ConnectException(req, new java.net.ConnectException) }
+    val offline = server { case _ => throw unreachable }
     val broken = server { case _ => throw new IllegalStateException("backend closed") }
     for {
-      result <- fetch(unreachable)
-      _      <- interceptIO[IllegalStateException](fetch(broken))
+      result <- offline.fetch
+      _      <- interceptIO[IllegalStateException](broken.fetch)
     } yield assert(result.left.exists(_.isInstanceOf[TaxxoError.Transport]), result)
   }
 }
