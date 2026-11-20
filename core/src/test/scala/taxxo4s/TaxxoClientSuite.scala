@@ -6,7 +6,7 @@ import sttp.client4.SttpClientException
 import sttp.model.{Method, StatusCode}
 import sttp.tapir.*
 import sttp.tapir.json.jsoniter.*
-import taxxo4s.FakeTaxxo.{apiError, config, document, error, fetchDocument, ok, Reply}
+import taxxo4s.FakeTaxxo.{apiError, backendClosed, config, document, error, fetchDocument, ok, Reply}
 import taxxo4s.generated.{Documents, Invoices, Personnel}
 import taxxo4s.generated.enums.APIAbsenceRequestStatusEnum
 import taxxo4s.generated.raw.TaxxoEndpoints.*
@@ -16,6 +16,11 @@ class TaxxoClientSuite extends munit.FunSuite {
   private val absenceRequests =
     """[{"AbsenceRequestId":7,"General":{"Flag":0,"AbsenceType":1,"RequestStatus":-1},
       |  "Periods":[{"DateFrom":"2026-11-02T00:00:00","DateTo":"2026-11-03T00:00:00"}]}]""".stripMargin
+
+  private def decodeError(result: Either[TaxxoError, Any]): TaxxoError.Decode = result match {
+    case Left(error: TaxxoError.Decode) => error
+    case other                          => fail(s"expected a Decode error, got $other")
+  }
 
   test("call authenticates lazily, sends the token and returns decoded Data") {
     val fake = FakeTaxxo { case (req, "token-1") if req.uri.path.last == "absenceRequests" => ok(absenceRequests) }
@@ -75,7 +80,7 @@ class TaxxoClientSuite extends munit.FunSuite {
   }
 
   test("other backend exceptions are not swallowed") {
-    val fake = FakeTaxxo { case _ => throw new IllegalStateException("backend closed") }
+    val fake = FakeTaxxo { case _ => throw backendClosed }
     intercept[IllegalStateException](fake.fetch)
   }
 
@@ -108,13 +113,10 @@ class TaxxoClientSuite extends munit.FunSuite {
   test("malformed JSON becomes TaxxoError.Decode, keeping the parser error as the cause but not the body") {
     val sensitive = "PESEL-12345"
     val fake = FakeTaxxo { case _ => s"""{"Data": {"DocumentId": "not-a-number"}, "Message": "$sensitive"}""" }
-    fake.fetch match {
-      case Left(error: TaxxoError.Decode) =>
-        assert(error.getCause.isInstanceOf[DecodeResult.Error.JsonDecodeException], error.getCause)
-        assert(!error.getMessage.contains(sensitive), error.getMessage)
-        assert(error.getMessage.contains("ApiPublicDocumentByDocumentIdGet"), error.getMessage)
-      case other => fail(s"expected a decode error, got $other")
-    }
+    val error = decodeError(fake.fetch)
+    assert(error.getCause.isInstanceOf[DecodeResult.Error.JsonDecodeException], error.getCause)
+    assert(!error.getMessage.contains(sensitive), error.getMessage)
+    assert(error.getMessage.contains("ApiPublicDocumentByDocumentIdGet"), error.getMessage)
   }
 
   test("a successful response that is not JSON, or is empty, becomes TaxxoError.Decode") {
@@ -124,10 +126,10 @@ class TaxxoClientSuite extends munit.FunSuite {
     }
   }
 
-  test("a decode error's message stays short even for a huge response") {
+  test("a decode error's details stay short even for a huge response") {
     val fake = FakeTaxxo { case _ => s"""{"Data": {"DocumentId": 1, "Notes": "${"y" * 100000}"""" }
-    val message = fake.fetch.left.map(_.getMessage)
-    assert(message.left.exists(_.length < 700), message)
+    val details = decodeError(fake.fetch).details
+    assert(details.length < 2000, details.length)
   }
 
   test("an enum value the spec doesn't list still decodes") {

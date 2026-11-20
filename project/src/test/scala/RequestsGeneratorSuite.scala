@@ -57,7 +57,7 @@ class RequestsGeneratorSuite extends munit.FunSuite {
       query("opt", string),
       query("tags", array(string)),
       query("ids", array(int), required = true),
-      param("csv", "query", array(string)).deepMerge(Json.obj("explode" -> Json.False))
+      query("csv", array(string)).deepMerge(Json.obj("explode" -> Json.False))
     )
     assertEquals(
       member(List(get("/api/public/q", operation("ApiPublicQGet", parameters = params)))),

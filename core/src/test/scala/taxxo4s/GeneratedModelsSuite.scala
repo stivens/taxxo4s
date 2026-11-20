@@ -26,16 +26,20 @@ class GeneratedModelsSuite extends munit.FunSuite {
       }
     }
 
-  private def sample(schema: Schema[?], depth: Int): String = schema.schemaType match {
-    case SchemaType.SOption(element)            => sample(element, depth)
-    case SchemaType.SArray(element)             => s"[${sample(element, depth)}]"
-    case p: SchemaType.SProduct[?] if depth < 4 =>
-      (p.fields.map(f => s""""${f.name.encodedName}":${sample(f.schema, depth + 1)}""") :+ "\"NotInTheSpec\":[1]").mkString("{", ",", "}")
-    case _: SchemaType.SProduct[?] | _: SchemaType.SRef[?] | _: SchemaType.SOpenProduct[?, ?] => "{}"
-    case SchemaType.SString()                                                                 => "\"\""
-    case SchemaType.SInteger() | SchemaType.SNumber()                                         => "0"
-    case SchemaType.SBoolean()                                                                => "false"
-    case _                                                                                    => "null"
+  private def sample(schema: Schema[?]): String = schema.schemaType match {
+    case SchemaType.SOption(element) => sample(element)
+    case SchemaType.SArray(element)  => s"[${sample(element)}]"
+    case p: SchemaType.SProduct[?]   =>
+      (p.fields.map(f => s""""${f.name.encodedName}":${sample(f.schema)}""") :+ "\"NotInTheSpec\":[1]").mkString("{", ",", "}")
+    case _: SchemaType.SRef[?] | _: SchemaType.SOpenProduct[?, ?] => "{}"
+    case SchemaType.SString()                                     => "\"\""
+    case SchemaType.SInteger() | SchemaType.SNumber()             => "0"
+    case SchemaType.SBoolean()                                    => "false"
+    case SchemaType.SBinary()                                     => "\"AQID\""
+    case SchemaType.SDate()                                       => "\"2026-11-02\""
+    // Schema.any, which codegen gives free-form JSON fields.
+    case SchemaType.SCoproduct(Nil, None) => "{\"free\":[\"form\"]}"
+    case other                            => fail(s"no sample for $other")
   }
 
   private def dataSchema(e: EndpointFixture[?]): Schema[?] = bodyCodec(e).schema.schemaType match {
@@ -53,7 +57,7 @@ class GeneratedModelsSuite extends munit.FunSuite {
   }
 
   test("every response decodes Data with every field filled in, plus fields the spec doesn't know") {
-    assertEquals(failures(e => s"""{"Data":${sample(dataSchema(e), 0)},"Status":0}"""), Nil)
+    assertEquals(failures(e => s"""{"Data":${sample(dataSchema(e))},"Status":0}"""), Nil)
   }
 
   test("every response's envelope reads a Status=Error response as an Api error, and Status=OK as none") {

@@ -9,7 +9,7 @@ class SpecNormalizerSuite extends munit.FunSuite {
   private def rejection(spec: Json): String = intercept[IllegalArgumentException](normalize(spec)).getMessage
 
   private def schema(spec: Json, name: String): Json =
-    spec.at("components", "schemas", name).focus.getOrElse(fail(s"no schema $name"))
+    SpecNormalizer.schemas(spec)(name).getOrElse(fail(s"no schema $name"))
 
   private val status = get("/api/public/status", operation("ApiPublicStatusGet"))
   private val minimal = withSession(List(status))
@@ -26,23 +26,25 @@ class SpecNormalizerSuite extends munit.FunSuite {
 
   test("a session operation that no longer matches what TaxxoClient sends or decodes is rejected") {
     val changes = List(
-      "/api/public/authenticate" -> ("post", "requestBody", body(int)),
-      "/api/public/authenticate" -> ("post", "responses", responses(ref("APIResponse"))),
-      "/api/public/authenticate" -> ("post", "parameters", Json.arr()),
-      "/api/public/logout" -> ("get", "responses", responses(ref("StringAPIDataResponse")))
+      ("/api/public/authenticate", "post", "requestBody", body(int)),
+      ("/api/public/authenticate", "post", "responses", responses(ref("APIResponse"))),
+      ("/api/public/authenticate", "post", "parameters", Json.arr()),
+      ("/api/public/logout", "get", "responses", responses(ref("StringAPIDataResponse")))
     )
-    changes.foreach { case (url, (method, key, value)) =>
+    changes.foreach { (url, method, key, value) =>
       val spec = minimal.deepMerge(Json.obj("paths" -> Json.obj(url -> Json.obj(method -> Json.obj(key -> value)))))
       assert(rejection(spec).contains(s"the spec's $url no longer matches"), s"$url $key")
     }
   }
 
   test("a session operation that only gained parameters or responses is accepted") {
+    val unauthorized = Json.obj("responses" -> Json.obj("401" -> Json.obj("description" -> Json.fromString("Unauthorized"))))
     val extra = Json.obj(
       "paths" -> Json.obj(
         "/api/public/authenticate" -> Json.obj(
-          "post" -> Json.obj("parameters" -> Json.arr(query("culture", string), query("extra", string)))
-        )
+          "post" -> Json.obj("parameters" -> Json.arr(query("culture", string), query("extra", string))).deepMerge(unauthorized)
+        ),
+        "/api/public/logout" -> Json.obj("get" -> unauthorized)
       )
     )
     normalize(minimal.deepMerge(extra))
@@ -54,9 +56,9 @@ class SpecNormalizerSuite extends munit.FunSuite {
       List("UserLogin" -> json("""{"type": "object", "required": ["Login"], "properties": {"Login": {"type": "string"}}}"""))
     )
     val normalized = normalize(spec)
-    assertEquals(normalized.spec.at("paths").keys.toList.flatten, List("/api/public/status"))
+    assertEquals(normalized.spec.at("paths").keyList, List("/api/public/status"))
     assertEquals(normalized.droppedOperations, Nil)
-    assert(schema(normalized.spec, "UserLogin").hcursor.downField("required").failed)
+    assert(schema(normalized.spec, "UserLogin").at("required").failed)
   }
 
   test("operations with an object-typed query parameter are dropped and reported, whatever shape the object takes") {
@@ -81,7 +83,7 @@ class SpecNormalizerSuite extends munit.FunSuite {
       )
       val normalized = normalize(spec)
       assertEquals(normalized.droppedOperations, List("ApiPublicFilteredGet (object-typed query parameter)"), shape)
-      assertEquals(normalized.spec.at("paths", "/api/public/filtered").keys.toList.flatten, List("post"), shape)
+      assertEquals(normalized.spec.at("paths", "/api/public/filtered").keyList, List("post"), shape)
     }
   }
 
@@ -124,7 +126,7 @@ class SpecNormalizerSuite extends munit.FunSuite {
     )
     val spec = withSession(List(get("/api/public/dates", operation("ApiPublicDatesGet", parameters = params))))
     val formats = normalize(spec).spec.at("paths", "/api/public/dates", "get", "parameters").values.toList.flatten.map { p =>
-      p.hcursor.downField("schema").get[String]("format").toOption
+      p.at("schema", "format").as[String].toOption
     }
     assertEquals(formats, List(Some("date"), Some("date-time"), None))
   }
@@ -142,8 +144,8 @@ class SpecNormalizerSuite extends munit.FunSuite {
       )
     )
     val normalized = normalize(withSession(List(post("/api/public/thing", op)))).spec.at("paths", "/api/public/thing", "post")
-    assertEquals(normalized.downFields("requestBody", "content").keys.toList.flatten, List("application/json"))
-    assertEquals(normalized.downFields("responses", "200", "content").keys.toList.flatten, List("application/json"))
+    assertEquals(normalized.downFields("requestBody", "content").keyList, List("application/json"))
+    assertEquals(normalized.downFields("responses", "200", "content").keyList, List("application/json"))
   }
 
   test("security requirements are removed from operations and the document, and so are document tags") {
@@ -152,7 +154,7 @@ class SpecNormalizerSuite extends munit.FunSuite {
       .deepMerge(Json.obj("security" -> json("""[{"Bearer": []}]"""), "tags" -> json("""[{"name": "General"}]""")))
     val normalized = normalize(spec).spec
     assertEquals(normalized.findAllByKey("security"), Nil)
-    assert(normalized.hcursor.downField("tags").failed)
+    assert(normalized.at("tags").failed)
   }
 
   test("required is dropped from every model a response reaches, and kept on request-only models") {
@@ -170,7 +172,7 @@ class SpecNormalizerSuite extends munit.FunSuite {
       )
     )
     val normalized = normalize(spec).spec
-    List("Outer", "Middle", "Leaf").foreach(n => assert(schema(normalized, n).hcursor.downField("required").failed, n))
+    List("Outer", "Middle", "Leaf").foreach(n => assert(schema(normalized, n).at("required").failed, n))
     assertEquals(schema(normalized, "Input").hcursor.get[List[String]]("required"), Right(List("Name")))
   }
 
@@ -232,7 +234,7 @@ class SpecNormalizerSuite extends munit.FunSuite {
   }
 
   test("vendored spec: no login or logout operations remain") {
-    val urls = vendored.spec.at("paths").keys.toList.flatten
+    val urls = vendored.spec.at("paths").keyList
     assertEquals(urls.filter(_.matches("/api/public/(authenticate.*|logout)")), Nil)
   }
 
@@ -244,7 +246,7 @@ class SpecNormalizerSuite extends munit.FunSuite {
     val roots = vendored.spec.at("paths").focus.toList.flatMap(_.findAllByKey("responses")).flatMap(refs)
     val reachable = roots.foldLeft(Set.empty[String])(closure)
     assert(reachable.size > 100, reachable.size)
-    assertEquals(reachable.filter(n => schemas(n).exists(_.hcursor.downField("required").focus.exists(_.isArray))), Set.empty[String])
+    assertEquals(reachable.filter(n => schemas(n).exists(_.at("required").focus.exists(_.isArray))), Set.empty[String])
     assertEquals(Json.fromJsonObject(schemas).findAllByKey("format").filter(_ == Json.fromString("date-time")), Nil)
   }
 }

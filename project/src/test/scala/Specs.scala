@@ -16,12 +16,10 @@ object Specs {
     Json.obj("200" -> Json.obj("description" -> Json.fromString("OK"), "content" -> content(schema)))
 
   def param(name: String, in: String, schema: Json, required: Boolean = false, description: String = ""): Json =
-    Json.obj(
-      "name" -> Json.fromString(name),
-      "in" -> Json.fromString(in),
-      "required" -> Json.fromBoolean(required),
-      "schema" -> schema
-    ).deepMerge(if (description.isEmpty) Json.obj() else Json.obj("description" -> Json.fromString(description)))
+    Json.fromFields(
+      List("name" -> Json.fromString(name), "in" -> Json.fromString(in), "required" -> Json.fromBoolean(required), "schema" -> schema) ++
+        Option.when(description.nonEmpty)("description" -> Json.fromString(description))
+    )
 
   def query(name: String, schema: Json, required: Boolean = false, description: String = ""): Json =
     param(name, "query", schema, required, description)
@@ -49,16 +47,13 @@ object Specs {
       response: Json = ref("APIResponse"),
       summary: String = ""
   ): Json =
-    Json.obj(
-      "operationId" -> Json.fromString(id),
-      "tags" -> Json.arr(Json.fromString(tag)),
-      "parameters" -> Json.fromValues(parameters),
-      "responses" -> responses(response)
-    ).deepMerge(
-      Json.fromFields(
-        requestBody.map("requestBody" -> _).toList ++
-          Option.when(summary.nonEmpty)("summary" -> Json.fromString(summary))
-      )
+    Json.fromFields(
+      List(
+        "operationId" -> Json.fromString(id),
+        "tags" -> Json.arr(Json.fromString(tag)),
+        "parameters" -> Json.fromValues(parameters),
+        "responses" -> responses(response)
+      ) ++ requestBody.map("requestBody" -> _) ++ Option.when(summary.nonEmpty)("summary" -> Json.fromString(summary))
     )
 
   private val baseSchemas: List[(String, Json)] = List(
@@ -80,7 +75,7 @@ object Specs {
   )
 
   def document(paths: List[PathOp], schemas: List[(String, Json)] = Nil): Json = {
-    val grouped = paths.groupMap(_._1)(_._2).toList.map((url, ops) => url -> Json.fromFields(ops))
+    val grouped = paths.map(_._1).distinct.map(url => url -> Json.fromFields(paths.collect { case (`url`, op) => op }))
     Json.obj(
       "openapi" -> Json.fromString("3.0.1"),
       "info" -> Json.obj("title" -> Json.fromString("Test"), "version" -> Json.fromString("v1")),
@@ -99,5 +94,9 @@ object Specs {
 
   extension (spec: Json) {
     def at(keys: String*): ACursor = keys.foldLeft[ACursor](spec.hcursor)(_.downField(_))
+  }
+
+  extension (cursor: ACursor) {
+    def keyList: List[String] = cursor.keys.toList.flatten
   }
 }

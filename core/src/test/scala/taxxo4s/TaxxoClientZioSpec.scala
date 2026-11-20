@@ -1,7 +1,7 @@
 package taxxo4s
 
 import sttp.client4.impl.zio.RIOMonadAsyncError
-import taxxo4s.FakeTaxxo.{document, unreachable}
+import taxxo4s.FakeTaxxo.{backendClosed, document, unreachable}
 import zio.*
 import zio.test.*
 
@@ -52,7 +52,7 @@ object TaxxoClientZioSpec extends ZIOSpecDefault {
     },
     test("transport failures are values, other backend exceptions fail the effect") {
       val offline = server { case _ => throw unreachable }
-      val broken = server { case _ => throw new IllegalStateException("backend closed") }
+      val broken = server { case _ => throw backendClosed }
       for {
         result  <- offline.fetch
         failure <- broken.fetch.flip

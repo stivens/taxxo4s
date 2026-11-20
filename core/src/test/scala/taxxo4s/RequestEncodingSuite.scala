@@ -2,7 +2,8 @@ package taxxo4s
 
 import java.time.{Instant, LocalDate}
 
-import sttp.client4.{GenericRequest, StringBody}
+import sttp.client4.GenericRequest
+import sttp.client4.testing.*
 import sttp.model.{HeaderNames, Method, Uri}
 import taxxo4s.FakeTaxxo.{fetchDocument, ok}
 import taxxo4s.generated.{Documents, InterestNotes, Invoices, Personnel, TagsAndAllocations, Tasks, Taxes, Users}
@@ -18,11 +19,6 @@ class RequestEncodingSuite extends munit.FunSuite {
   }
 
   private def onTheWire(req: GenericRequest[?, ?]): Uri = Uri.unsafeParse(req.uri.toString)
-
-  private def jsonBody(req: GenericRequest[?, ?]): String = req.body match {
-    case StringBody(s, _, _) => s
-    case other               => fail(s"expected a string body, got $other")
-  }
 
   test("path parameters are encoded into the URI") {
     val req = lastRequest(Documents.ApiPublicDocumentByDocumentIdGet(42))
@@ -73,7 +69,7 @@ class RequestEncodingSuite extends munit.FunSuite {
     val req = lastRequest(Tasks.ApiPublicTaskPost(APITask(Name = "Send the VAT report", Status = Some(APITaskStatus.Open))))
     assertEquals(req.method, Method.POST)
     assertEquals(req.header(HeaderNames.ContentType).map(_.takeWhile(_ != ';')), Some("application/json"))
-    val body = jsonBody(req)
+    val body = req.forceBodyAsString
     assert(body.contains("\"Name\":\"Send the VAT report\""), body)
     assert(body.contains(s"\"Status\":${APITaskStatus.Open}"), body)
   }
@@ -82,7 +78,7 @@ class RequestEncodingSuite extends munit.FunSuite {
   test("an optional body that is left out is sent as an empty body labelled application/json") {
     val req = lastRequest(Users.ApiPublicUserByUserIdPermissionsDocumentAccessRulesPost(5))
     assertEquals(req.method, Method.POST)
-    assertEquals((jsonBody(req), req.header(HeaderNames.ContentType)), ("", Some("application/json")))
+    assertEquals((req.forceBodyAsString, req.header(HeaderNames.ContentType)), ("", Some("application/json")))
   }
 
   test("the session token is sent as the raw Authorization header, without a scheme") {

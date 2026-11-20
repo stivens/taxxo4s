@@ -5,7 +5,7 @@ import scala.concurrent.duration.*
 import cats.effect.IO
 import munit.CatsEffectSuite
 import sttp.client4.impl.cats.CatsMonadAsyncError
-import taxxo4s.FakeTaxxo.{document, unreachable}
+import taxxo4s.FakeTaxxo.{backendClosed, document, unreachable}
 
 class TaxxoClientCatsEffectSuite extends CatsEffectSuite {
 
@@ -51,7 +51,7 @@ class TaxxoClientCatsEffectSuite extends CatsEffectSuite {
 
   test("transport failures are values, other backend exceptions fail the IO") {
     val offline = server { case _ => throw unreachable }
-    val broken = server { case _ => throw new IllegalStateException("backend closed") }
+    val broken = server { case _ => throw backendClosed }
     for {
       result <- offline.fetch
       _      <- interceptIO[IllegalStateException](broken.fetch)

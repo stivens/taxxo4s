@@ -3,7 +3,7 @@ package taxxo4s
 import scala.concurrent.{ExecutionContext, Future}
 
 import sttp.monad.FutureMonad
-import taxxo4s.FakeTaxxo.document
+import taxxo4s.FakeTaxxo.{backendClosed, document}
 
 class TaxxoClientFutureSuite extends munit.FunSuite {
 
@@ -36,7 +36,7 @@ class TaxxoClientFutureSuite extends munit.FunSuite {
   }
 
   test("a Future backend fails the Future on other backend exceptions") {
-    val fake = server { case _ => throw new IllegalStateException("backend closed") }
+    val fake = server { case _ => throw backendClosed }
     fake.fetch.failed.map(e => assert(e.isInstanceOf[IllegalStateException], e))
   }
 }

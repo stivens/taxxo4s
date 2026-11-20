@@ -3,7 +3,7 @@ package taxxo4s
 import sttp.client4.testing.*
 import sttp.model.{Method, StatusCode}
 import sttp.model.Uri.UriContext
-import taxxo4s.FakeTaxxo.{apiError, config, document, error, ok, unreachable, Reply}
+import taxxo4s.FakeTaxxo.{apiError, backendClosed, config, document, error, ok, unreachable, Reply}
 
 class TaxxoSessionSuite extends munit.FunSuite {
 
@@ -90,9 +90,10 @@ class TaxxoSessionSuite extends munit.FunSuite {
   test("authenticating again succeeds even if logging out the replaced session throws") {
     val fake = FakeTaxxo()
     fake.client.authenticate
-    fake.replyOnce("logout")(throw new IllegalStateException("backend closed"))
+    fake.replyOnce("logout")(throw backendClosed)
     assertEquals(fake.client.authenticate, Right("token-2"))
-    fake.replyOnce("logout")(throw new IllegalStateException("backend closed"))
+    assertEquals(fake.tokensSentTo("logout"), List(Some("token-1")))
+    fake.replyOnce("logout")(throw backendClosed)
     intercept[IllegalStateException](fake.client.logout)
   }
 

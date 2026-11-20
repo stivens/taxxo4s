@@ -17,7 +17,7 @@ class GeneratedRequestsSuite extends munit.FunSuite {
     assertEquals(actual, EndpointFixtures.fixtures.map(f => f.endpoint.showShort -> f.inputNames).toMap)
   }
 
-  test("every generated endpoint is public and named after its operation") {
+  test("every generated endpoint is public, and no two share a method and path") {
     val names = EndpointFixtures.endpoints.map(_.showShort)
     assertEquals(names.distinct.size, names.size)
     assert(names.size > 300, names.size)

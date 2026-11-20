@@ -29,7 +29,8 @@ final class FakeTaxxo[F[_]](monad: MonadError[F], latency: F[Unit], config: Taxx
   def fetch = client.call(fetchDocument)
 
   def onLogin(hook: => Any): Unit = loginHook.set(Some(() => hook))
-  def replyOnce(endpoint: String)(reply: => String | Reply): Unit = nextReplies.put(endpoint, () => reply)
+  def replyOnce(endpoint: String)(reply: => String | Reply): Unit =
+    require(nextReplies.put(endpoint, () => reply) == null, s"the previous one-off reply for $endpoint was never used")
   def expire(token: String): Unit = sessions.put(token, Session.Expired)
 
   def requests: List[GenericRequest[?, ?]] = recording.allInteractions.map(_._1)
@@ -39,14 +40,12 @@ final class FakeTaxxo[F[_]](monad: MonadError[F], latency: F[Unit], config: Taxx
   def loggedOutTokenUses: Int = loggedOutUses.get
   def openSessions: Set[String] = sessions.asScala.collect { case (token, Session.Open) => token }.toSet
 
-  private def respond(req: GenericRequest[?, ?]): String | Reply = {
-    val token = req.header("Authorization").getOrElse("")
-    val endpoint = req.uri.path.last
-    Option(nextReplies.remove(endpoint)).fold(defaultReply(req, endpoint, token))(_())
-  }
+  private def respond(req: GenericRequest[?, ?]): String | Reply =
+    Option(nextReplies.remove(req.uri.path.last)).fold(defaultReply(req))(_())
 
-  private def defaultReply(req: GenericRequest[?, ?], endpoint: String, token: String): String | Reply =
-    endpoint match {
+  private def defaultReply(req: GenericRequest[?, ?]): String | Reply = {
+    val token = req.header("Authorization").getOrElse("")
+    req.uri.path.last match {
       case "authenticate" =>
         val issued = s"token-${logins.incrementAndGet()}"
         sessions.put(issued, Session.Open)
@@ -63,6 +62,7 @@ final class FakeTaxxo[F[_]](monad: MonadError[F], latency: F[Unit], config: Taxx
           case _                 => handler.lift((req, token)).getOrElse(Reply(StatusCode.Unauthorized, ""))
         }
     }
+  }
 
   private def toResponse(reply: String | Reply): Response[StubBody] = reply match {
     case Reply(code, body) => ResponseStub.adjust(body, code)
@@ -85,6 +85,8 @@ object FakeTaxxo {
 
   val fetchDocument = Documents.ApiPublicDocumentByDocumentIdGet(1)
   val document: String = ok("""{"DocumentId":1}""")
+
+  def backendClosed: IllegalStateException = new IllegalStateException("backend closed")
 
   def unreachable: SttpClientException =
     new SttpClientException.ConnectException(basicRequest.get(uri"https://taxxo"), new java.net.ConnectException)
