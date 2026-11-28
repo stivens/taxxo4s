@@ -1,5 +1,5 @@
 val tapirVersion = "1.14.1"
-val sttpVersion = "4.1.3"
+val sttpVersion = "4.1.4"
 val jsoniterVersion = "2.43.0"
 val repoUrl = uri("https://github.com/stivens/taxxo4s")
 
